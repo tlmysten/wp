@@ -21,6 +21,7 @@ type RunOptions struct {
 	ID            string
 	Port          int
 	PortEnv       string
+	ExtraPorts    []string
 	HostEnv       string
 	Env           []string
 	CWD           string
@@ -74,6 +75,14 @@ func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOpti
 			return err
 		}
 	}
+	extraPortSpecs, err := parseExtraPortSpecs(opts.ExtraPorts)
+	if err != nil {
+		return err
+	}
+	extraPorts, err := allocateExtraPorts(extraPortSpecs, map[int]bool{port: true})
+	if err != nil {
+		return err
+	}
 
 	stdout := opts.Stdout
 	if stdout == nil {
@@ -89,14 +98,15 @@ func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOpti
 	}
 
 	role := Role{
-		Name:      roleName,
-		Host:      "127.0.0.1",
-		Port:      port,
-		URL:       (&url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", port)}).String(),
-		CWD:       cwd,
-		Command:   append([]string(nil), opts.Command...),
-		StartedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		Name:       roleName,
+		Host:       "127.0.0.1",
+		Port:       port,
+		URL:        (&url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", port)}).String(),
+		ExtraPorts: extraPorts,
+		CWD:        cwd,
+		Command:    append([]string(nil), opts.Command...),
+		StartedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
 	}
 	resolvedEnv, err := resolveEnvAssignments(store, service.Name, id, role, opts.Env)
 	if err != nil {
@@ -105,7 +115,7 @@ func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOpti
 
 	command := exec.Command(opts.Command[0], opts.Command[1:]...)
 	command.Dir = cwd
-	command.Env = childEnv(opts, id, role, resolvedEnv)
+	command.Env = childEnv(opts, id, role, extraPortSpecs, resolvedEnv)
 	command.Stdout = stdout
 	command.Stderr = stderr
 	command.Stdin = stdin
@@ -146,7 +156,7 @@ func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOpti
 	return commandResult(err)
 }
 
-func childEnv(opts RunOptions, id string, role Role, extraEnv []string) []string {
+func childEnv(opts RunOptions, id string, role Role, extraPortSpecs []extraPortSpec, extraEnv []string) []string {
 	env := append([]string(nil), os.Environ()...)
 	env = append(env,
 		fmt.Sprintf("%s=%d", opts.PortEnv, role.Port),
@@ -157,8 +167,96 @@ func childEnv(opts RunOptions, id string, role Role, extraEnv []string) []string
 	if opts.HostEnv != "" {
 		env = append(env, fmt.Sprintf("%s=127.0.0.1", opts.HostEnv))
 	}
+	for _, assignment := range extraPortEnvAssignments(extraPortSpecs, role.ExtraPorts) {
+		env = append(env, assignment)
+	}
 	env = append(env, extraEnv...)
 	return env
+}
+
+type extraPortSpec struct {
+	Name string
+	Env  string
+}
+
+func allocateExtraPorts(specs []extraPortSpec, usedPorts map[int]bool) (map[string]ExtraPort, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	extraPorts := make(map[string]ExtraPort, len(specs))
+	for _, spec := range specs {
+		if _, ok := extraPorts[spec.Name]; ok {
+			return nil, fmt.Errorf("duplicate extra port %q", spec.Name)
+		}
+		port, err := findFreePortExcept(usedPorts)
+		if err != nil {
+			return nil, err
+		}
+		usedPorts[port] = true
+		extraPorts[spec.Name] = ExtraPort{
+			Name: spec.Name,
+			Host: "127.0.0.1",
+			Port: port,
+			URL:  (&url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", port)}).String(),
+		}
+	}
+	return extraPorts, nil
+}
+
+func findFreePortExcept(usedPorts map[int]bool) (int, error) {
+	var lastErr error
+	for range 20 {
+		port, err := FindFreePort()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if !usedPorts[port] {
+			return port, nil
+		}
+	}
+	if lastErr != nil {
+		return 0, lastErr
+	}
+	return 0, fmt.Errorf("could not allocate distinct free port")
+}
+
+func extraPortEnvAssignments(specs []extraPortSpec, extraPorts map[string]ExtraPort) []string {
+	if len(specs) == 0 {
+		return nil
+	}
+	assignments := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		extraPort, ok := extraPorts[spec.Name]
+		if !ok {
+			continue
+		}
+		assignments = append(assignments, fmt.Sprintf("%s=%d", spec.Env, extraPort.Port))
+	}
+	return assignments
+}
+
+func parseExtraPortSpecs(specs []string) ([]extraPortSpec, error) {
+	parsed := make([]extraPortSpec, 0, len(specs))
+	for _, spec := range specs {
+		name, envName, err := parseExtraPortSpec(spec)
+		if err != nil {
+			return nil, err
+		}
+		parsed = append(parsed, extraPortSpec{Name: name, Env: envName})
+	}
+	return parsed, nil
+}
+
+func parseExtraPortSpec(spec string) (string, string, error) {
+	name, envName, ok := strings.Cut(spec, ":")
+	if !ok || name == "" || envName == "" {
+		return "", "", fmt.Errorf("extra port must be name:ENV_VAR: %q", spec)
+	}
+	if strings.Contains(envName, ":") {
+		return "", "", fmt.Errorf("extra port must be name:ENV_VAR: %q", spec)
+	}
+	return name, envName, nil
 }
 
 func resolveRunRole(store *Store, serviceName string, roleName string) (Service, string, error) {

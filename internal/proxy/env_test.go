@@ -18,6 +18,14 @@ func TestResolveEnvAssignmentsUsesRegisteredRoles(t *testing.T) {
 		Host: "127.0.0.1",
 		Port: 43103,
 		URL:  "http://127.0.0.1:43103",
+		ExtraPorts: map[string]ExtraPort{
+			"prometheus": {
+				Name: "prometheus",
+				Host: "127.0.0.1",
+				Port: 43104,
+				URL:  "http://127.0.0.1:43104",
+			},
+		},
 	}); err != nil {
 		t.Fatalf("register backend: %v", err)
 	}
@@ -29,6 +37,7 @@ func TestResolveEnvAssignmentsUsesRegisteredRoles(t *testing.T) {
 		URL:  "http://127.0.0.1:5173",
 	}, []string{
 		"EXPO_PUBLIC_APPS_BACKEND_URL={{backend.url}}",
+		"PROMETHEUS_URL={{backend.prometheus.url}}",
 		"FRONTEND_PORT={{frontend.port}}",
 	})
 	if err != nil {
@@ -37,6 +46,7 @@ func TestResolveEnvAssignmentsUsesRegisteredRoles(t *testing.T) {
 
 	want := []string{
 		"EXPO_PUBLIC_APPS_BACKEND_URL=http://127.0.0.1:43103",
+		"PROMETHEUS_URL=http://127.0.0.1:43104",
 		"FRONTEND_PORT=5173",
 	}
 	if len(resolved) != len(want) {

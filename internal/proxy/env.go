@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-var envTemplatePattern = regexp.MustCompile(`\{\{([A-Za-z0-9._-]+)\.(host|port|url)\}\}`)
+var envTemplatePattern = regexp.MustCompile(`\{\{([A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]+))?\.(host|port|url)\}\}`)
 
 func resolveEnvAssignments(store *Store, serviceName string, id string, currentRole Role, assignments []string) ([]string, error) {
 	if len(assignments) == 0 {
@@ -50,7 +50,7 @@ func renderEnvValue(value string, roles map[string]Role) (string, error) {
 	var renderErr error
 	rendered := envTemplatePattern.ReplaceAllStringFunc(value, func(match string) string {
 		parts := envTemplatePattern.FindStringSubmatch(match)
-		if len(parts) != 3 {
+		if len(parts) != 4 {
 			renderErr = fmt.Errorf("invalid env template %q", match)
 			return match
 		}
@@ -59,7 +59,25 @@ func renderEnvValue(value string, roles map[string]Role) (string, error) {
 			renderErr = fmt.Errorf("unknown role %q in env template %q", parts[1], match)
 			return match
 		}
-		switch parts[2] {
+		if parts[2] != "" {
+			extraPort, ok := role.ExtraPorts[parts[2]]
+			if !ok {
+				renderErr = fmt.Errorf("unknown extra port %q for role %q in env template %q", parts[2], parts[1], match)
+				return match
+			}
+			switch parts[3] {
+			case "host":
+				return extraPort.Host
+			case "port":
+				return strconv.Itoa(extraPort.Port)
+			case "url":
+				return extraPort.URL
+			default:
+				renderErr = fmt.Errorf("unknown field %q in env template %q", parts[3], match)
+				return match
+			}
+		}
+		switch parts[3] {
 		case "host":
 			return role.Host
 		case "port":
@@ -67,7 +85,7 @@ func renderEnvValue(value string, roles map[string]Role) (string, error) {
 		case "url":
 			return role.URL
 		default:
-			renderErr = fmt.Errorf("unknown field %q in env template %q", parts[2], match)
+			renderErr = fmt.Errorf("unknown field %q in env template %q", parts[3], match)
 			return match
 		}
 	})

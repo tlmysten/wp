@@ -44,15 +44,23 @@ type Instance struct {
 }
 
 type Role struct {
-	Name      string    `json:"name"`
-	Host      string    `json:"host"`
-	Port      int       `json:"port"`
-	URL       string    `json:"url"`
-	CWD       string    `json:"cwd"`
-	Command   []string  `json:"command"`
-	PID       int       `json:"pid"`
-	StartedAt time.Time `json:"startedAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	Name       string               `json:"name"`
+	Host       string               `json:"host"`
+	Port       int                  `json:"port"`
+	URL        string               `json:"url"`
+	ExtraPorts map[string]ExtraPort `json:"extraPorts,omitempty"`
+	CWD        string               `json:"cwd"`
+	Command    []string             `json:"command"`
+	PID        int                  `json:"pid"`
+	StartedAt  time.Time            `json:"startedAt"`
+	UpdatedAt  time.Time            `json:"updatedAt"`
+}
+
+type ExtraPort struct {
+	Name string `json:"name"`
+	Host string `json:"host"`
+	Port int    `json:"port"`
+	URL  string `json:"url"`
 }
 
 func NewState() State {

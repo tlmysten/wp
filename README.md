@@ -29,6 +29,16 @@ wp service add slush --alias dev.slush.app --alias-role frontend
 wp run slush/backend --id tlmysten--some-feature --port-env PORT -- pnpm -F backend dev
 ```
 
+Add named extra ports for side channels such as metrics:
+
+```sh
+wp run slush/backend \
+  --id tlmysten--some-feature \
+  --port-env PORT \
+  --extra-port prometheus:PROMETHEUS_PORT \
+  -- pnpm -F backend dev
+```
+
 In another terminal for the same worktree:
 
 ```sh
@@ -36,6 +46,7 @@ wp run slush/frontend \
   --id tlmysten--some-feature \
   --port-env PORT \
   --env 'EXPO_PUBLIC_APPS_BACKEND_URL={{backend.url}}' \
+  --env 'EXPO_PUBLIC_APPS_BACKEND_PROMETHEUS_URL={{backend.prometheus.url}}' \
   --switch \
   -- pnpm -F wallet dev:web
 ```

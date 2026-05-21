@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -135,8 +136,9 @@ func newProxyRunCommand(opts *globalOptions) *cobra.Command {
 	cmd.Flags().StringVar(&runOpts.ID, "id", "", "instance id; defaults to the current git branch")
 	cmd.Flags().IntVar(&runOpts.Port, "port", 0, "fixed child port; defaults to an available random port")
 	cmd.Flags().StringVar(&runOpts.PortEnv, "port-env", runOpts.PortEnv, "environment variable used to pass the chosen port")
+	cmd.Flags().StringArrayVar(&runOpts.ExtraPorts, "extra-port", nil, "extra random port as name:ENV_VAR, e.g. prometheus:PROMETHEUS_PORT")
 	cmd.Flags().StringVar(&runOpts.HostEnv, "host-env", "", "optional environment variable used to pass 127.0.0.1")
-	cmd.Flags().StringArrayVar(&runOpts.Env, "env", nil, "extra KEY=VALUE environment assignment; supports {{role.port}}, {{role.host}}, and {{role.url}}")
+	cmd.Flags().StringArrayVar(&runOpts.Env, "env", nil, "extra KEY=VALUE environment assignment; supports {{role.port}}, {{role.url}}, and {{role.extraName.url}}")
 	cmd.Flags().StringVar(&runOpts.CWD, "cwd", "", "child working directory; defaults to the current directory")
 	cmd.Flags().BoolVar(&runOpts.SwitchOnStart, "switch", runOpts.SwitchOnStart, "switch the service alias to this instance after registering")
 
@@ -175,8 +177,9 @@ func newRunCommand(opts *globalOptions) *cobra.Command {
 	cmd.Flags().StringVar(&runOpts.ID, "id", "", "instance id; defaults to the current git branch")
 	cmd.Flags().IntVar(&runOpts.Port, "port", 0, "fixed child port; defaults to an available random port")
 	cmd.Flags().StringVar(&runOpts.PortEnv, "port-env", runOpts.PortEnv, "environment variable used to pass the chosen port")
+	cmd.Flags().StringArrayVar(&runOpts.ExtraPorts, "extra-port", nil, "extra random port as name:ENV_VAR, e.g. prometheus:PROMETHEUS_PORT")
 	cmd.Flags().StringVar(&runOpts.HostEnv, "host-env", "", "optional environment variable used to pass 127.0.0.1")
-	cmd.Flags().StringArrayVar(&runOpts.Env, "env", nil, "extra KEY=VALUE environment assignment; supports {{role.port}}, {{role.host}}, and {{role.url}}")
+	cmd.Flags().StringArrayVar(&runOpts.Env, "env", nil, "extra KEY=VALUE environment assignment; supports {{role.port}}, {{role.url}}, and {{role.extraName.url}}")
 	cmd.Flags().StringVar(&runOpts.CWD, "cwd", "", "child working directory; defaults to the current directory")
 	cmd.Flags().BoolVar(&runOpts.SwitchOnStart, "switch", runOpts.SwitchOnStart, "switch the service alias to this instance after registering")
 
@@ -368,7 +371,7 @@ func writeInstanceList(out interface {
 	Write([]byte) (int, error)
 }, state proxy.State, serviceFilter string) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SERVICE\tACTIVE\tID\tROLE\tPORT\tPID\tCWD\tCOMMAND")
+	fmt.Fprintln(w, "SERVICE\tACTIVE\tID\tROLE\tPORT\tEXTRA PORTS\tPID\tCWD\tCOMMAND")
 	for _, service := range state.SortedServices() {
 		if serviceFilter != "" && service.Name != serviceFilter {
 			continue
@@ -383,12 +386,13 @@ func writeInstanceList(out interface {
 				if service.ActiveID == instance.ID && service.ActiveRole == role.Name {
 					roleActive = "*"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n",
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\n",
 					service.Name,
 					roleActive,
 					instance.ID,
 					role.Name,
 					role.Port,
+					formatExtraPorts(role.ExtraPorts),
 					role.PID,
 					role.CWD,
 					strings.Join(role.Command, " "),
@@ -397,6 +401,22 @@ func writeInstanceList(out interface {
 		}
 	}
 	return w.Flush()
+}
+
+func formatExtraPorts(extraPorts map[string]proxy.ExtraPort) string {
+	if len(extraPorts) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(extraPorts))
+	for name := range extraPorts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s:%d", name, extraPorts[name].Port))
+	}
+	return strings.Join(parts, ",")
 }
 
 func parseServiceRole(target string) (string, string, error) {
