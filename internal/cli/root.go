@@ -30,7 +30,14 @@ func NewRootCommand() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opts.localiasBin, "localias-bin", opts.localiasBin, "localias binary path")
 	cmd.PersistentFlags().StringVar(&opts.localiasConfig, "localias-config", opts.localiasConfig, "localias config file path")
 
-	cmd.AddCommand(newProxyCommand(opts))
+	cmd.AddCommand(
+		newProxyCommand(opts),
+		newProxyServiceCommand(opts),
+		newRunCommand(opts),
+		newSwitchCommand(opts),
+		newListCommand(opts),
+		newUnregisterCommand(opts),
+	)
 	return cmd
 }
 

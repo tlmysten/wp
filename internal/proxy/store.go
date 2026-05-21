@@ -56,12 +56,7 @@ func (store *Store) Load() (State, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return State{}, fmt.Errorf("parse state: %w", err)
 	}
-	if state.Version == 0 {
-		state.Version = stateVersion
-	}
-	if state.Services == nil {
-		state.Services = make(map[string]Service)
-	}
+	state.Normalize()
 	return state, nil
 }
 
@@ -88,6 +83,7 @@ func (store *Store) save(state State) error {
 	}
 
 	state.Version = stateVersion
+	state.Normalize()
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)

@@ -6,45 +6,52 @@ import (
 )
 
 type recordingBackend struct {
-	service  Service
-	instance Instance
+	service Service
+	role    Role
 }
 
-func (backend *recordingBackend) Apply(ctx context.Context, service Service, instance Instance) error {
+func (backend *recordingBackend) Apply(ctx context.Context, service Service, role Role) error {
 	backend.service = service
-	backend.instance = instance
+	backend.role = role
 	return nil
 }
 
-func TestRegisterAndSwitchInstance(t *testing.T) {
+func TestRegisterRoleAndSwitchInstance(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
 
-	if _, err := UpsertService(context.Background(), store, "slush", "dev.slush.app"); err != nil {
+	if _, err := UpsertService(context.Background(), store, "slush", "dev.slush.app", "frontend"); err != nil {
 		t.Fatalf("upsert service: %v", err)
 	}
-	instance := Instance{ID: "feature", Host: "127.0.0.1", Port: 5001}
-	if err := RegisterInstance(context.Background(), store, "slush", instance); err != nil {
-		t.Fatalf("register: %v", err)
+	backendRole := Role{Name: "backend", Host: "127.0.0.1", Port: 5001}
+	if err := RegisterRole(context.Background(), store, "slush", "feature", backendRole); err != nil {
+		t.Fatalf("register backend: %v", err)
+	}
+	frontendRole := Role{Name: "frontend", Host: "127.0.0.1", Port: 5002}
+	if err := RegisterRole(context.Background(), store, "slush", "feature", frontendRole); err != nil {
+		t.Fatalf("register frontend: %v", err)
 	}
 
 	backend := &recordingBackend{}
-	service, switched, err := SwitchInstance(context.Background(), store, backend, "slush", "feature")
+	service, switched, role, err := SwitchInstance(context.Background(), store, backend, "slush", "feature")
 	if err != nil {
 		t.Fatalf("switch: %v", err)
 	}
 	if service.ActiveID != "feature" {
 		t.Fatalf("active id = %q, want feature", service.ActiveID)
 	}
-	if switched.Port != 5001 {
-		t.Fatalf("switched port = %d, want 5001", switched.Port)
+	if switched.ID != "feature" {
+		t.Fatalf("switched id = %q, want feature", switched.ID)
+	}
+	if role.Port != 5002 {
+		t.Fatalf("switched role port = %d, want 5002", role.Port)
 	}
 	if backend.service.Alias != "dev.slush.app" {
 		t.Fatalf("backend service alias = %q", backend.service.Alias)
 	}
-	if backend.instance.ID != "feature" {
-		t.Fatalf("backend instance id = %q", backend.instance.ID)
+	if backend.role.Name != "frontend" {
+		t.Fatalf("backend role = %q, want frontend", backend.role.Name)
 	}
 }

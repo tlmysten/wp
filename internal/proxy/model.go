@@ -5,7 +5,10 @@ import (
 	"time"
 )
 
-const stateVersion = 1
+const (
+	stateVersion      = 2
+	DefaultSwitchRole = "frontend"
+)
 
 type State struct {
 	Version  int                `json:"version"`
@@ -13,16 +16,32 @@ type State struct {
 }
 
 type Service struct {
-	Name      string              `json:"name"`
-	Alias     string              `json:"alias"`
-	ActiveID  string              `json:"activeId,omitempty"`
-	Instances map[string]Instance `json:"instances"`
-	CreatedAt time.Time           `json:"createdAt"`
-	UpdatedAt time.Time           `json:"updatedAt"`
+	Name       string              `json:"name"`
+	Alias      string              `json:"alias"`
+	ActiveID   string              `json:"activeId,omitempty"`
+	SwitchRole string              `json:"switchRole"`
+	Instances  map[string]Instance `json:"instances"`
+	CreatedAt  time.Time           `json:"createdAt"`
+	UpdatedAt  time.Time           `json:"updatedAt"`
 }
 
 type Instance struct {
-	ID        string    `json:"id"`
+	ID        string          `json:"id"`
+	Roles     map[string]Role `json:"roles"`
+	CreatedAt time.Time       `json:"createdAt"`
+	UpdatedAt time.Time       `json:"updatedAt"`
+
+	LegacyHost      string    `json:"host,omitempty"`
+	LegacyPort      int       `json:"port,omitempty"`
+	LegacyURL       string    `json:"url,omitempty"`
+	LegacyCWD       string    `json:"cwd,omitempty"`
+	LegacyCommand   []string  `json:"command,omitempty"`
+	LegacyPID       int       `json:"pid,omitempty"`
+	LegacyStartedAt time.Time `json:"startedAt,omitempty"`
+}
+
+type Role struct {
+	Name      string    `json:"name"`
 	Host      string    `json:"host"`
 	Port      int       `json:"port"`
 	URL       string    `json:"url"`
@@ -51,16 +70,82 @@ func (state State) SortedServices() []Service {
 	return services
 }
 
+func (state *State) Normalize() {
+	if state.Version == 0 {
+		state.Version = stateVersion
+	}
+	if state.Services == nil {
+		state.Services = make(map[string]Service)
+	}
+	for serviceName, service := range state.Services {
+		if service.Name == "" {
+			service.Name = serviceName
+		}
+		if service.SwitchRole == "" {
+			service.SwitchRole = DefaultSwitchRole
+		}
+		if service.Instances == nil {
+			service.Instances = make(map[string]Instance)
+		}
+		for instanceID, instance := range service.Instances {
+			if instance.ID == "" {
+				instance.ID = instanceID
+			}
+			if instance.Roles == nil {
+				instance.Roles = make(map[string]Role)
+			}
+			if instance.LegacyPort > 0 && len(instance.Roles) == 0 {
+				roleName := service.SwitchRole
+				if roleName == "" {
+					roleName = DefaultSwitchRole
+				}
+				role := Role{
+					Name:      roleName,
+					Host:      instance.LegacyHost,
+					Port:      instance.LegacyPort,
+					URL:       instance.LegacyURL,
+					CWD:       instance.LegacyCWD,
+					Command:   append([]string(nil), instance.LegacyCommand...),
+					PID:       instance.LegacyPID,
+					StartedAt: instance.LegacyStartedAt,
+					UpdatedAt: instance.UpdatedAt,
+				}
+				if role.Host == "" {
+					role.Host = "127.0.0.1"
+				}
+				instance.Roles[roleName] = role
+			}
+			instance.LegacyHost = ""
+			instance.LegacyPort = 0
+			instance.LegacyURL = ""
+			instance.LegacyCWD = ""
+			instance.LegacyCommand = nil
+			instance.LegacyPID = 0
+			instance.LegacyStartedAt = time.Time{}
+			service.Instances[instanceID] = instance
+		}
+		state.Services[serviceName] = service
+	}
+}
+
 func (service Service) SortedInstances() []Instance {
 	instances := make([]Instance, 0, len(service.Instances))
 	for _, instance := range service.Instances {
 		instances = append(instances, instance)
 	}
 	sort.Slice(instances, func(i int, j int) bool {
-		if instances[i].ID == instances[j].ID {
-			return instances[i].Port < instances[j].Port
-		}
 		return instances[i].ID < instances[j].ID
 	})
 	return instances
+}
+
+func (instance Instance) SortedRoles() []Role {
+	roles := make([]Role, 0, len(instance.Roles))
+	for _, role := range instance.Roles {
+		roles = append(roles, role)
+	}
+	sort.Slice(roles, func(i int, j int) bool {
+		return roles[i].Name < roles[j].Name
+	})
+	return roles
 }

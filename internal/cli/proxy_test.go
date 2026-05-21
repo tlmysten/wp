@@ -37,7 +37,7 @@ func TestProxyRunAppliesLocaliasAndPassesPort(t *testing.T) {
 		"--",
 		envPath,
 	)
-	if !strings.Contains(output, "registered and switched slush/feature -> 127.0.0.1:") {
+	if !strings.Contains(output, "registered and switched slush/feature/frontend -> 127.0.0.1:") {
 		t.Fatalf("run output did not include registration line: %q", output)
 	}
 

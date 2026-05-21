@@ -17,10 +17,12 @@ import (
 
 type RunOptions struct {
 	ServiceName   string
+	RoleName      string
 	ID            string
 	Port          int
 	PortEnv       string
 	HostEnv       string
+	Env           []string
 	CWD           string
 	Command       []string
 	SwitchOnStart bool
@@ -47,6 +49,10 @@ func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOpti
 	if opts.PortEnv == "" {
 		return fmt.Errorf("port environment variable is required")
 	}
+	service, roleName, err := resolveRunRole(store, opts.ServiceName, opts.RoleName)
+	if err != nil {
+		return err
+	}
 
 	cwd, err := resolveCWD(opts.CWD)
 	if err != nil {
@@ -57,7 +63,7 @@ func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOpti
 	if id == "" {
 		id = defaultID(cwd)
 	}
-	if err := validateRunTarget(store, opts.ServiceName, id); err != nil {
+	if err := validateRunTarget(store, service.Name, id, roleName); err != nil {
 		return err
 	}
 
@@ -82,9 +88,24 @@ func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOpti
 		stdin = os.Stdin
 	}
 
+	role := Role{
+		Name:      roleName,
+		Host:      "127.0.0.1",
+		Port:      port,
+		URL:       (&url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", port)}).String(),
+		CWD:       cwd,
+		Command:   append([]string(nil), opts.Command...),
+		StartedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	resolvedEnv, err := resolveEnvAssignments(store, service.Name, id, role, opts.Env)
+	if err != nil {
+		return err
+	}
+
 	command := exec.Command(opts.Command[0], opts.Command[1:]...)
 	command.Dir = cwd
-	command.Env = childEnv(opts, id, port)
+	command.Env = childEnv(opts, id, role, resolvedEnv)
 	command.Stdout = stdout
 	command.Stderr = stderr
 	command.Stdin = stdin
@@ -93,20 +114,10 @@ func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOpti
 		return fmt.Errorf("start command: %w", err)
 	}
 
-	instance := Instance{
-		ID:        id,
-		Host:      "127.0.0.1",
-		Port:      port,
-		URL:       (&url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", port)}).String(),
-		CWD:       cwd,
-		Command:   append([]string(nil), opts.Command...),
-		PID:       command.Process.Pid,
-		StartedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
+	role.PID = command.Process.Pid
 
 	registered := false
-	if err := RegisterInstance(ctx, store, opts.ServiceName, instance); err != nil {
+	if err := RegisterRole(ctx, store, service.Name, id, role); err != nil {
 		_ = command.Process.Kill()
 		_, _ = waitWithTimeout(command, 2*time.Second)
 		return err
@@ -114,51 +125,75 @@ func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOpti
 	registered = true
 
 	if opts.SwitchOnStart {
-		if _, _, err := SwitchInstance(ctx, store, backend, opts.ServiceName, id); err != nil {
-			_ = UnregisterInstance(context.Background(), store, opts.ServiceName, id)
+		if _, _, _, err := SwitchInstance(ctx, store, backend, service.Name, id); err != nil {
+			_ = UnregisterRole(context.Background(), store, service.Name, id, roleName)
 			_ = command.Process.Kill()
 			_, _ = waitWithTimeout(command, 2*time.Second)
 			return err
 		}
-		fmt.Fprintf(stdout, "registered and switched %s/%s -> 127.0.0.1:%d\n", opts.ServiceName, id, port)
+		fmt.Fprintf(stdout, "registered and switched %s/%s/%s -> 127.0.0.1:%d\n", service.Name, id, roleName, port)
 	} else {
-		fmt.Fprintf(stdout, "registered %s/%s -> 127.0.0.1:%d\n", opts.ServiceName, id, port)
+		fmt.Fprintf(stdout, "registered %s/%s/%s -> 127.0.0.1:%d\n", service.Name, id, roleName, port)
 	}
 
 	err = waitForCommand(ctx, command)
 	if registered {
-		if unregisterErr := UnregisterInstance(context.Background(), store, opts.ServiceName, id); unregisterErr != nil {
-			fmt.Fprintf(stderr, "wp: failed to unregister %s/%s: %v\n", opts.ServiceName, id, unregisterErr)
+		if unregisterErr := UnregisterRole(context.Background(), store, service.Name, id, roleName); unregisterErr != nil {
+			fmt.Fprintf(stderr, "wp: failed to unregister %s/%s/%s: %v\n", service.Name, id, roleName, unregisterErr)
 		}
 	}
 
 	return commandResult(err)
 }
 
-func childEnv(opts RunOptions, id string, port int) []string {
+func childEnv(opts RunOptions, id string, role Role, extraEnv []string) []string {
 	env := append([]string(nil), os.Environ()...)
 	env = append(env,
-		fmt.Sprintf("%s=%d", opts.PortEnv, port),
+		fmt.Sprintf("%s=%d", opts.PortEnv, role.Port),
 		fmt.Sprintf("WP_SERVICE=%s", opts.ServiceName),
 		fmt.Sprintf("WP_ID=%s", id),
+		fmt.Sprintf("WP_ROLE=%s", role.Name),
 	)
 	if opts.HostEnv != "" {
 		env = append(env, fmt.Sprintf("%s=127.0.0.1", opts.HostEnv))
 	}
+	env = append(env, extraEnv...)
 	return env
 }
 
-func validateRunTarget(store *Store, serviceName string, id string) error {
+func resolveRunRole(store *Store, serviceName string, roleName string) (Service, string, error) {
+	state, err := store.Load()
+	if err != nil {
+		return Service{}, "", err
+	}
+	service, ok := state.Services[serviceName]
+	if !ok {
+		return Service{}, "", fmt.Errorf("unknown service %q; add it with `wp service add %s --alias <domain>`", serviceName, serviceName)
+	}
+	if roleName == "" {
+		roleName = service.SwitchRole
+	}
+	if roleName == "" {
+		roleName = DefaultSwitchRole
+	}
+	return service, roleName, nil
+}
+
+func validateRunTarget(store *Store, serviceName string, id string, roleName string) error {
 	state, err := store.Load()
 	if err != nil {
 		return err
 	}
 	service, ok := state.Services[serviceName]
 	if !ok {
-		return fmt.Errorf("unknown service %q; add it with `wp proxy service add %s --alias <domain>`", serviceName, serviceName)
+		return fmt.Errorf("unknown service %q; add it with `wp service add %s --alias <domain>`", serviceName, serviceName)
 	}
-	if _, ok := service.Instances[id]; ok {
-		return fmt.Errorf("instance %q is already registered for service %q", id, serviceName)
+	instance, ok := service.Instances[id]
+	if !ok {
+		return nil
+	}
+	if _, ok := instance.Roles[roleName]; ok {
+		return fmt.Errorf("role %q is already registered for service %q instance %q", roleName, serviceName, id)
 	}
 	return nil
 }

@@ -2,52 +2,80 @@
 
 `wp` registers worktree-local dev servers and points a localias domain at the active instance.
 
+The model is:
+
+```text
+service -> instance id -> role
+slush   -> feature-a   -> backend | frontend
+```
+
 ## Install
 
 ```sh
-go install -buildvcs=false ./cmd/wp
+go install ./cmd/wp
 ```
 
 ## Configure a service
 
 ```sh
-wp proxy service add slush --alias dev.slush.app
+wp service add slush --alias dev.slush.app --switch-role frontend
 ```
 
-## Run a worktree instance
+`--switch-role` is the role localias should point at when you switch instances.
+
+## Run a full stack
 
 ```sh
-wp proxy run --service slush --id tlmysten--some-feature --port-env PORT -- pnpm dev
+wp run slush/backend --id tlmysten--some-feature --port-env PORT -- pnpm -F backend dev
 ```
 
-`wp proxy run` picks an available localhost port, sets `PORT`, registers the instance, switches the service alias to it, and unregisters the instance when the child process exits.
+In another terminal for the same worktree:
+
+```sh
+wp run slush/frontend \
+  --id tlmysten--some-feature \
+  --port-env PORT \
+  --env 'EXPO_PUBLIC_APPS_BACKEND_URL={{backend.url}}' \
+  --switch \
+  -- pnpm -F wallet dev:web
+```
+
+That produces:
+
+```text
+dev.slush.app -> frontend(tlmysten--some-feature) -> backend(tlmysten--some-feature)
+```
+
+`wp run` picks an available localhost port, sets `PORT`, registers the role, optionally switches the service alias, and unregisters the role when the child process exits.
 
 Use a fixed port when needed:
 
 ```sh
-wp proxy run --service slush --id tlmysten--some-feature --port 5173 -- pnpm dev
+wp run slush/frontend --id tlmysten--some-feature --port 5173 -- pnpm -F wallet dev:web
 ```
 
 Start without switching immediately:
 
 ```sh
-wp proxy run --service slush --id tlmysten--some-feature --switch=false -- pnpm dev
+wp run slush/frontend --id tlmysten--some-feature --switch=false -- pnpm -F wallet dev:web
 ```
 
 ## Switch instances
 
 ```sh
-wp proxy switch --service slush --id tlmysten--some-feature
+wp switch slush tlmysten--some-feature
 ```
 
 ## Inspect state
 
 ```sh
-wp proxy service list
-wp proxy list
+wp service list
+wp list
 ```
 
 By default, state is stored under the user config directory in `wp/proxy-state.json`. Set `WP_STATE_DIR` or pass `--state-dir` to use another location.
+
+The older `wp proxy ...` commands still exist. They are wrappers around the same state and localias backend.
 
 ## Test server
 
