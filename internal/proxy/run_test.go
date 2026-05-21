@@ -3,8 +3,8 @@ package proxy
 import "testing"
 
 func TestChildEnvIncludesExtraPorts(t *testing.T) {
-	role := Role{
-		Name: "backend",
+	instance := Instance{
+		ID:   "feature",
 		Port: 3003,
 		ExtraPorts: map[string]ExtraPort{
 			"prometheus": {
@@ -19,7 +19,7 @@ func TestChildEnvIncludesExtraPorts(t *testing.T) {
 			PortEnv:     "PORT",
 		},
 		"feature",
-		role,
+		instance,
 		[]extraPortSpec{{Name: "prometheus", Env: "PROMETHEUS_PORT"}},
 		nil,
 	)
@@ -29,6 +29,31 @@ func TestChildEnvIncludesExtraPorts(t *testing.T) {
 	}
 	if !containsEnv(env, "PROMETHEUS_PORT=9090") {
 		t.Fatalf("env did not include PROMETHEUS_PORT=9090: %v", env)
+	}
+}
+
+func TestInstancePortsSummaryIncludesExtraPorts(t *testing.T) {
+	summary := instancePortsSummary(Instance{
+		ID:   "feature",
+		Host: "localhost",
+		Port: 3003,
+		ExtraPorts: map[string]ExtraPort{
+			"prometheus": {
+				Name: "prometheus",
+				Host: "localhost",
+				Port: 9090,
+			},
+			"debug": {
+				Name: "debug",
+				Host: "localhost",
+				Port: 9229,
+			},
+		},
+	})
+
+	want := "localhost:3003 debug=localhost:9229 prometheus=localhost:9090"
+	if summary != want {
+		t.Fatalf("summary = %q, want %q", summary, want)
 	}
 }
 

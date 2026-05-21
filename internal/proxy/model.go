@@ -5,10 +5,7 @@ import (
 	"time"
 )
 
-const (
-	stateVersion     = 2
-	DefaultAliasRole = "frontend"
-)
+const stateVersion = 3
 
 type State struct {
 	Version  int                `json:"version"`
@@ -17,34 +14,16 @@ type State struct {
 
 type Service struct {
 	Name       string              `json:"name"`
-	Alias      string              `json:"alias"`
+	Alias      string              `json:"alias,omitempty"`
+	ListenPort int                 `json:"listenPort,omitempty"`
 	ActiveID   string              `json:"activeId,omitempty"`
-	ActiveRole string              `json:"activeRole,omitempty"`
-	AliasRole  string              `json:"aliasRole"`
 	Instances  map[string]Instance `json:"instances"`
 	CreatedAt  time.Time           `json:"createdAt"`
 	UpdatedAt  time.Time           `json:"updatedAt"`
-
-	LegacySwitchRole string `json:"switchRole,omitempty"`
 }
 
 type Instance struct {
-	ID        string          `json:"id"`
-	Roles     map[string]Role `json:"roles"`
-	CreatedAt time.Time       `json:"createdAt"`
-	UpdatedAt time.Time       `json:"updatedAt"`
-
-	LegacyHost      string    `json:"host,omitempty"`
-	LegacyPort      int       `json:"port,omitempty"`
-	LegacyURL       string    `json:"url,omitempty"`
-	LegacyCWD       string    `json:"cwd,omitempty"`
-	LegacyCommand   []string  `json:"command,omitempty"`
-	LegacyPID       int       `json:"pid,omitempty"`
-	LegacyStartedAt time.Time `json:"startedAt,omitempty"`
-}
-
-type Role struct {
-	Name       string               `json:"name"`
+	ID         string               `json:"id"`
 	Host       string               `json:"host"`
 	Port       int                  `json:"port"`
 	URL        string               `json:"url"`
@@ -92,16 +71,6 @@ func (state *State) Normalize() {
 		if service.Name == "" {
 			service.Name = serviceName
 		}
-		if service.AliasRole == "" {
-			service.AliasRole = service.LegacySwitchRole
-		}
-		if service.AliasRole == "" {
-			service.AliasRole = DefaultAliasRole
-		}
-		if service.ActiveID != "" && service.ActiveRole == "" {
-			service.ActiveRole = service.AliasRole
-		}
-		service.LegacySwitchRole = ""
 		if service.Instances == nil {
 			service.Instances = make(map[string]Instance)
 		}
@@ -109,37 +78,9 @@ func (state *State) Normalize() {
 			if instance.ID == "" {
 				instance.ID = instanceID
 			}
-			if instance.Roles == nil {
-				instance.Roles = make(map[string]Role)
+			if instance.Host == "" && instance.Port > 0 {
+				instance.Host = "localhost"
 			}
-			if instance.LegacyPort > 0 && len(instance.Roles) == 0 {
-				roleName := service.AliasRole
-				if roleName == "" {
-					roleName = DefaultAliasRole
-				}
-				role := Role{
-					Name:      roleName,
-					Host:      instance.LegacyHost,
-					Port:      instance.LegacyPort,
-					URL:       instance.LegacyURL,
-					CWD:       instance.LegacyCWD,
-					Command:   append([]string(nil), instance.LegacyCommand...),
-					PID:       instance.LegacyPID,
-					StartedAt: instance.LegacyStartedAt,
-					UpdatedAt: instance.UpdatedAt,
-				}
-				if role.Host == "" {
-					role.Host = "127.0.0.1"
-				}
-				instance.Roles[roleName] = role
-			}
-			instance.LegacyHost = ""
-			instance.LegacyPort = 0
-			instance.LegacyURL = ""
-			instance.LegacyCWD = ""
-			instance.LegacyCommand = nil
-			instance.LegacyPID = 0
-			instance.LegacyStartedAt = time.Time{}
 			service.Instances[instanceID] = instance
 		}
 		state.Services[serviceName] = service
@@ -155,15 +96,4 @@ func (service Service) SortedInstances() []Instance {
 		return instances[i].ID < instances[j].ID
 	})
 	return instances
-}
-
-func (instance Instance) SortedRoles() []Role {
-	roles := make([]Role, 0, len(instance.Roles))
-	for _, role := range instance.Roles {
-		roles = append(roles, role)
-	}
-	sort.Slice(roles, func(i int, j int) bool {
-		return roles[i].Name < roles[j].Name
-	})
-	return roles
 }

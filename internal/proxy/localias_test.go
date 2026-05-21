@@ -23,9 +23,9 @@ func TestLocaliasBackendApply(t *testing.T) {
 		Reload:     true,
 	}
 	service := Service{Name: "slush", Alias: "dev.slush.app"}
-	role := Role{Name: "frontend", Host: "127.0.0.1", Port: 5173}
+	instance := Instance{ID: "feature", Host: "localhost", Port: 5173}
 
-	if err := backend.Apply(context.Background(), service, role); err != nil {
+	if err := backend.Apply(context.Background(), service, instance); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 

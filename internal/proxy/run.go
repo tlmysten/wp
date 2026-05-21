@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -17,7 +18,6 @@ import (
 
 type RunOptions struct {
 	ServiceName   string
-	RoleName      string
 	ID            string
 	Port          int
 	PortEnv       string
@@ -40,6 +40,8 @@ func (err CommandExitError) Error() string {
 	return fmt.Sprintf("command exited with status %d", err.Code)
 }
 
+const defaultHost = "localhost"
+
 func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOptions) error {
 	if len(opts.Command) == 0 {
 		return fmt.Errorf("command is required")
@@ -50,7 +52,7 @@ func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOpti
 	if opts.PortEnv == "" {
 		return fmt.Errorf("port environment variable is required")
 	}
-	service, roleName, err := resolveRunRole(store, opts.ServiceName, opts.RoleName)
+	service, err := resolveRunService(store, opts.ServiceName)
 	if err != nil {
 		return err
 	}
@@ -64,7 +66,7 @@ func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOpti
 	if id == "" {
 		id = defaultID(cwd)
 	}
-	if err := validateRunTarget(store, service.Name, id, roleName); err != nil {
+	if err := validateRunTarget(store, service.Name, id); err != nil {
 		return err
 	}
 
@@ -97,25 +99,25 @@ func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOpti
 		stdin = os.Stdin
 	}
 
-	role := Role{
-		Name:       roleName,
-		Host:       "127.0.0.1",
+	instance := Instance{
+		ID:         id,
+		Host:       defaultHost,
 		Port:       port,
-		URL:        (&url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", port)}).String(),
+		URL:        (&url.URL{Scheme: "http", Host: fmt.Sprintf("%s:%d", defaultHost, port)}).String(),
 		ExtraPorts: extraPorts,
 		CWD:        cwd,
 		Command:    append([]string(nil), opts.Command...),
 		StartedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
 	}
-	resolvedEnv, err := resolveEnvAssignments(store, service.Name, id, role, opts.Env)
+	resolvedEnv, err := resolveEnvAssignments(store, service.Name, id, instance, opts.Env)
 	if err != nil {
 		return err
 	}
 
 	command := exec.Command(opts.Command[0], opts.Command[1:]...)
 	command.Dir = cwd
-	command.Env = childEnv(opts, id, role, extraPortSpecs, resolvedEnv)
+	command.Env = childEnv(opts, id, instance, extraPortSpecs, resolvedEnv)
 	command.Stdout = stdout
 	command.Stderr = stderr
 	command.Stdin = stdin
@@ -124,10 +126,10 @@ func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOpti
 		return fmt.Errorf("start command: %w", err)
 	}
 
-	role.PID = command.Process.Pid
+	instance.PID = command.Process.Pid
 
 	registered := false
-	if err := RegisterRole(ctx, store, service.Name, id, role); err != nil {
+	if err := RegisterInstance(ctx, store, service.Name, instance); err != nil {
 		_ = command.Process.Kill()
 		_, _ = waitWithTimeout(command, 2*time.Second)
 		return err
@@ -135,39 +137,55 @@ func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOpti
 	registered = true
 
 	if opts.SwitchOnStart {
-		if _, _, _, err := SwitchInstanceRole(ctx, store, backend, service.Name, id, roleName); err != nil {
-			_ = UnregisterRole(context.Background(), store, service.Name, id, roleName)
+		if _, _, err := SwitchInstance(ctx, store, backend, service.Name, id); err != nil {
+			_ = UnregisterInstance(context.Background(), store, service.Name, id)
 			_ = command.Process.Kill()
 			_, _ = waitWithTimeout(command, 2*time.Second)
 			return err
 		}
-		fmt.Fprintf(stdout, "registered and switched %s/%s/%s -> 127.0.0.1:%d\n", service.Name, id, roleName, port)
+		fmt.Fprintf(stdout, "registered and switched %s/%s -> %s\n", service.Name, id, instancePortsSummary(instance))
 	} else {
-		fmt.Fprintf(stdout, "registered %s/%s/%s -> 127.0.0.1:%d\n", service.Name, id, roleName, port)
+		fmt.Fprintf(stdout, "registered %s/%s -> %s\n", service.Name, id, instancePortsSummary(instance))
 	}
 
 	err = waitForCommand(ctx, command)
 	if registered {
-		if unregisterErr := UnregisterRole(context.Background(), store, service.Name, id, roleName); unregisterErr != nil {
-			fmt.Fprintf(stderr, "wp: failed to unregister %s/%s/%s: %v\n", service.Name, id, roleName, unregisterErr)
+		if unregisterErr := UnregisterInstance(context.Background(), store, service.Name, id); unregisterErr != nil {
+			fmt.Fprintf(stderr, "wp: failed to unregister %s/%s: %v\n", service.Name, id, unregisterErr)
 		}
 	}
 
 	return commandResult(err)
 }
 
-func childEnv(opts RunOptions, id string, role Role, extraPortSpecs []extraPortSpec, extraEnv []string) []string {
+func instancePortsSummary(instance Instance) string {
+	parts := []string{fmt.Sprintf("%s:%d", instance.Host, instance.Port)}
+	if len(instance.ExtraPorts) == 0 {
+		return parts[0]
+	}
+	names := make([]string, 0, len(instance.ExtraPorts))
+	for name := range instance.ExtraPorts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		extraPort := instance.ExtraPorts[name]
+		parts = append(parts, fmt.Sprintf("%s=%s:%d", name, extraPort.Host, extraPort.Port))
+	}
+	return strings.Join(parts, " ")
+}
+
+func childEnv(opts RunOptions, id string, instance Instance, extraPortSpecs []extraPortSpec, extraEnv []string) []string {
 	env := append([]string(nil), os.Environ()...)
 	env = append(env,
-		fmt.Sprintf("%s=%d", opts.PortEnv, role.Port),
+		fmt.Sprintf("%s=%d", opts.PortEnv, instance.Port),
 		fmt.Sprintf("WP_SERVICE=%s", opts.ServiceName),
 		fmt.Sprintf("WP_ID=%s", id),
-		fmt.Sprintf("WP_ROLE=%s", role.Name),
 	)
 	if opts.HostEnv != "" {
-		env = append(env, fmt.Sprintf("%s=127.0.0.1", opts.HostEnv))
+		env = append(env, fmt.Sprintf("%s=%s", opts.HostEnv, instance.Host))
 	}
-	for _, assignment := range extraPortEnvAssignments(extraPortSpecs, role.ExtraPorts) {
+	for _, assignment := range extraPortEnvAssignments(extraPortSpecs, instance.ExtraPorts) {
 		env = append(env, assignment)
 	}
 	env = append(env, extraEnv...)
@@ -195,9 +213,9 @@ func allocateExtraPorts(specs []extraPortSpec, usedPorts map[int]bool) (map[stri
 		usedPorts[port] = true
 		extraPorts[spec.Name] = ExtraPort{
 			Name: spec.Name,
-			Host: "127.0.0.1",
+			Host: defaultHost,
 			Port: port,
-			URL:  (&url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", port)}).String(),
+			URL:  (&url.URL{Scheme: "http", Host: fmt.Sprintf("%s:%d", defaultHost, port)}).String(),
 		}
 	}
 	return extraPorts, nil
@@ -259,39 +277,29 @@ func parseExtraPortSpec(spec string) (string, string, error) {
 	return name, envName, nil
 }
 
-func resolveRunRole(store *Store, serviceName string, roleName string) (Service, string, error) {
+func resolveRunService(store *Store, serviceName string) (Service, error) {
 	state, err := store.Load()
 	if err != nil {
-		return Service{}, "", err
+		return Service{}, err
 	}
 	service, ok := state.Services[serviceName]
 	if !ok {
-		return Service{}, "", fmt.Errorf("unknown service %q; add it with `wp service add %s --alias <domain>`", serviceName, serviceName)
+		return Service{}, fmt.Errorf("unknown service %q; add it with `wp service add %s --alias <domain>` or `wp service add %s --listen <port>`", serviceName, serviceName, serviceName)
 	}
-	if roleName == "" {
-		roleName = service.AliasRole
-	}
-	if roleName == "" {
-		roleName = DefaultAliasRole
-	}
-	return service, roleName, nil
+	return service, nil
 }
 
-func validateRunTarget(store *Store, serviceName string, id string, roleName string) error {
+func validateRunTarget(store *Store, serviceName string, id string) error {
 	state, err := store.Load()
 	if err != nil {
 		return err
 	}
 	service, ok := state.Services[serviceName]
 	if !ok {
-		return fmt.Errorf("unknown service %q; add it with `wp service add %s --alias <domain>`", serviceName, serviceName)
+		return fmt.Errorf("unknown service %q; add it with `wp service add %s --alias <domain>` or `wp service add %s --listen <port>`", serviceName, serviceName, serviceName)
 	}
-	instance, ok := service.Instances[id]
-	if !ok {
-		return nil
-	}
-	if _, ok := instance.Roles[roleName]; ok {
-		return fmt.Errorf("role %q is already registered for service %q instance %q", roleName, serviceName, id)
+	if _, ok := service.Instances[id]; ok {
+		return fmt.Errorf("instance %q is already registered for service %q", id, serviceName)
 	}
 	return nil
 }

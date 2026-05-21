@@ -6,15 +6,15 @@ import (
 	"time"
 )
 
-func UpsertService(ctx context.Context, store *Store, name string, alias string, aliasRole string) (Service, error) {
+func UpsertService(ctx context.Context, store *Store, name string, alias string, listenPort int) (Service, error) {
 	if name == "" {
 		return Service{}, fmt.Errorf("service name is required")
 	}
-	if alias == "" {
-		return Service{}, fmt.Errorf("service alias is required")
+	if alias == "" && listenPort <= 0 {
+		return Service{}, fmt.Errorf("either --alias or --listen is required")
 	}
-	if aliasRole == "" {
-		aliasRole = DefaultAliasRole
+	if alias != "" && listenPort > 0 {
+		return Service{}, fmt.Errorf("only one of --alias or --listen can be set")
 	}
 
 	var saved Service
@@ -32,7 +32,7 @@ func UpsertService(ctx context.Context, store *Store, name string, alias string,
 			service.Instances = make(map[string]Instance)
 		}
 		service.Alias = alias
-		service.AliasRole = aliasRole
+		service.ListenPort = listenPort
 		service.UpdatedAt = now
 		state.Services[name] = service
 		saved = service
@@ -54,49 +54,33 @@ func RemoveService(ctx context.Context, store *Store, name string) error {
 	})
 }
 
-func RegisterRole(ctx context.Context, store *Store, serviceName string, id string, role Role) error {
+func RegisterInstance(ctx context.Context, store *Store, serviceName string, instance Instance) error {
 	if serviceName == "" {
 		return fmt.Errorf("service name is required")
 	}
-	if id == "" {
+	if instance.ID == "" {
 		return fmt.Errorf("instance id is required")
 	}
-	if role.Name == "" {
-		return fmt.Errorf("role name is required")
-	}
-	if role.Port <= 0 {
-		return fmt.Errorf("role port is required")
+	if instance.Port <= 0 {
+		return fmt.Errorf("instance port is required")
 	}
 	return store.Update(ctx, func(state *State) error {
 		service, ok := state.Services[serviceName]
 		if !ok {
-			return fmt.Errorf("unknown service %q; add it with `wp proxy service add %s --alias <domain>`", serviceName, serviceName)
+			return fmt.Errorf("unknown service %q; add it with `wp service add %s --alias <domain>` or `wp service add %s --listen <port>`", serviceName, serviceName, serviceName)
 		}
 		if service.Instances == nil {
 			service.Instances = make(map[string]Instance)
 		}
-		instance := service.Instances[id]
-		if instance.ID == "" {
-			instance = Instance{
-				ID:        id,
-				Roles:     make(map[string]Role),
-				CreatedAt: time.Now(),
-			}
-		}
-		if instance.Roles == nil {
-			instance.Roles = make(map[string]Role)
-		}
-		if _, ok := instance.Roles[role.Name]; ok {
-			return fmt.Errorf("role %q is already registered for service %q instance %q", role.Name, serviceName, id)
+		if _, ok := service.Instances[instance.ID]; ok {
+			return fmt.Errorf("instance %q is already registered for service %q", instance.ID, serviceName)
 		}
 		now := time.Now()
-		role.UpdatedAt = now
-		if role.StartedAt.IsZero() {
-			role.StartedAt = now
-		}
-		instance.Roles[role.Name] = role
 		instance.UpdatedAt = now
-		service.Instances[id] = instance
+		if instance.StartedAt.IsZero() {
+			instance.StartedAt = now
+		}
+		service.Instances[instance.ID] = instance
 		service.UpdatedAt = now
 		state.Services[serviceName] = service
 		return nil
@@ -121,7 +105,6 @@ func UnregisterInstance(ctx context.Context, store *Store, serviceName string, i
 		delete(service.Instances, id)
 		if service.ActiveID == id {
 			service.ActiveID = ""
-			service.ActiveRole = ""
 		}
 		service.UpdatedAt = time.Now()
 		state.Services[serviceName] = service
@@ -129,97 +112,54 @@ func UnregisterInstance(ctx context.Context, store *Store, serviceName string, i
 	})
 }
 
-func UnregisterRole(ctx context.Context, store *Store, serviceName string, id string, roleName string) error {
+func SwitchInstance(ctx context.Context, store *Store, backend Backend, serviceName string, id string) (Service, Instance, error) {
 	if serviceName == "" {
-		return fmt.Errorf("service name is required")
+		return Service{}, Instance{}, fmt.Errorf("service name is required")
 	}
 	if id == "" {
-		return fmt.Errorf("instance id is required")
-	}
-	if roleName == "" {
-		return fmt.Errorf("role name is required")
-	}
-	return store.Update(ctx, func(state *State) error {
-		service, ok := state.Services[serviceName]
-		if !ok {
-			return fmt.Errorf("unknown service %q", serviceName)
-		}
-		instance, ok := service.Instances[id]
-		if !ok {
-			return fmt.Errorf("unknown instance %q for service %q", id, serviceName)
-		}
-		if _, ok := instance.Roles[roleName]; !ok {
-			return fmt.Errorf("unknown role %q for service %q instance %q", roleName, serviceName, id)
-		}
-		delete(instance.Roles, roleName)
-		if len(instance.Roles) == 0 {
-			delete(service.Instances, id)
-			if service.ActiveID == id {
-				service.ActiveID = ""
-				service.ActiveRole = ""
-			}
-		} else {
-			instance.UpdatedAt = time.Now()
-			service.Instances[id] = instance
-			if service.ActiveID == id && service.ActiveRole == roleName {
-				service.ActiveID = ""
-				service.ActiveRole = ""
-			}
-		}
-		service.UpdatedAt = time.Now()
-		state.Services[serviceName] = service
-		return nil
-	})
-}
-
-func SwitchInstance(ctx context.Context, store *Store, backend Backend, serviceName string, id string) (Service, Instance, Role, error) {
-	return SwitchInstanceRole(ctx, store, backend, serviceName, id, "")
-}
-
-func SwitchInstanceRole(ctx context.Context, store *Store, backend Backend, serviceName string, id string, roleName string) (Service, Instance, Role, error) {
-	if serviceName == "" {
-		return Service{}, Instance{}, Role{}, fmt.Errorf("service name is required")
-	}
-	if id == "" {
-		return Service{}, Instance{}, Role{}, fmt.Errorf("instance id is required")
+		return Service{}, Instance{}, fmt.Errorf("instance id is required")
 	}
 
 	var switchedService Service
 	var switchedInstance Instance
-	var switchedRole Role
 	err := store.Update(ctx, func(state *State) error {
 		service, ok := state.Services[serviceName]
 		if !ok {
 			return fmt.Errorf("unknown service %q", serviceName)
 		}
-		if roleName == "" {
-			roleName = service.AliasRole
-		}
-		if roleName == "" {
-			roleName = DefaultAliasRole
-		}
 		instance, ok := service.Instances[id]
 		if !ok {
 			return fmt.Errorf("unknown instance %q for service %q", id, serviceName)
 		}
-		role, ok := instance.Roles[roleName]
-		if !ok {
-			return fmt.Errorf("unknown alias role %q for service %q instance %q", roleName, serviceName, id)
-		}
-		if backend == nil {
-			return fmt.Errorf("proxy backend is required")
-		}
-		if err := backend.Apply(ctx, service, role); err != nil {
-			return err
+		if service.Alias != "" {
+			if backend == nil {
+				return fmt.Errorf("proxy backend is required")
+			}
+			if err := backend.Apply(ctx, service, instance); err != nil {
+				return err
+			}
 		}
 		service.ActiveID = id
-		service.ActiveRole = roleName
 		service.UpdatedAt = time.Now()
 		state.Services[serviceName] = service
 		switchedService = service
 		switchedInstance = instance
-		switchedRole = role
 		return nil
 	})
-	return switchedService, switchedInstance, switchedRole, err
+	return switchedService, switchedInstance, err
+}
+
+func ActiveInstance(state State, serviceName string) (Service, Instance, error) {
+	service, ok := state.Services[serviceName]
+	if !ok {
+		return Service{}, Instance{}, fmt.Errorf("unknown service %q", serviceName)
+	}
+	if service.ActiveID == "" {
+		return Service{}, Instance{}, fmt.Errorf("service %q has no active instance", serviceName)
+	}
+	instance, ok := service.Instances[service.ActiveID]
+	if !ok {
+		return Service{}, Instance{}, fmt.Errorf("active instance %q for service %q is not registered", service.ActiveID, serviceName)
+	}
+	return service, instance, nil
 }

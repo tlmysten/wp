@@ -1,13 +1,17 @@
 # worktree-tools
 
-`wp` registers worktree-local dev servers and points a localias domain at the active instance.
+`wp` registers worktree-local dev servers and points one stable endpoint at the active instance.
 
-The model is:
+The model is deliberately small:
 
 ```text
-service -> instance id -> role
-slush   -> feature-a   -> backend | frontend
+service -> instance id -> localhost port
 ```
+
+A service has exactly one public endpoint:
+
+- `--alias dev.slush.app` uses localias.
+- `--listen 3003` uses `wp`'s built-in reverse proxy.
 
 ## Install
 
@@ -15,86 +19,81 @@ slush   -> feature-a   -> backend | frontend
 go install ./cmd/wp
 ```
 
-## Configure a service
+## Configure Services
 
 ```sh
-wp service add slush --alias dev.slush.app --alias-role frontend
+wp service add slush-web --alias dev.slush.app
+wp service add slush-backend --listen 3003
 ```
 
-`--alias-role` is the default role localias should point at when you switch instances.
+## Reverse Proxy Port Mapping
 
-## Run a full stack
+Run the stable backend port in one terminal:
 
 ```sh
-wp run slush/backend --id tlmysten--some-feature --port-env PORT -- pnpm -F backend dev
+wp serve slush-backend
 ```
 
-Add named extra ports for side channels such as metrics:
+Run a backend instance from any worktree:
 
 ```sh
-wp run slush/backend \
+wp run slush-backend \
   --id tlmysten--some-feature \
   --port-env PORT \
   --extra-port prometheus:PROMETHEUS_PORT \
+  --switch \
   -- pnpm -F backend dev
 ```
 
-In another terminal for the same worktree:
+Now `http://localhost:3003` proxies to the active `slush-backend` instance. Switch later with:
 
 ```sh
-wp run slush/frontend \
+wp switch slush-backend tlmysten--some-feature
+```
+
+## Localias Mapping
+
+Run a frontend instance and point the localias domain at it:
+
+```sh
+wp run slush-web \
   --id tlmysten--some-feature \
   --port-env PORT \
-  --env 'EXPO_PUBLIC_APPS_BACKEND_URL={{backend.url}}' \
-  --env 'EXPO_PUBLIC_APPS_BACKEND_PROMETHEUS_URL={{backend.prometheus.url}}' \
+  --env 'EXPO_PUBLIC_APPS_BACKEND_URL=http://localhost:3003' \
   --switch \
-  -- pnpm -F wallet dev:web
+  -- sh -c 'EXPO_PUBLIC_WEBSITE=true pnpm -F wallet exec expo start --web --port "$PORT"'
 ```
 
-That produces:
-
-```text
-dev.slush.app -> frontend(tlmysten--some-feature) -> backend(tlmysten--some-feature)
-```
-
-`wp run` picks an available localhost port, sets `PORT`, registers the role, optionally switches the service alias, and unregisters the role when the child process exits.
-
-Use a fixed port when needed:
+Switch later with:
 
 ```sh
-wp run slush/frontend --id tlmysten--some-feature --port 5173 -- pnpm -F wallet dev:web
+wp switch slush-web tlmysten--some-feature
 ```
 
-Start without switching immediately:
+## Environment Templates
+
+`--env` can reference registered services:
 
 ```sh
-wp run slush/frontend --id tlmysten--some-feature --switch=false -- pnpm -F wallet dev:web
+wp run slush-web \
+  --env 'EXPO_PUBLIC_APPS_BACKEND_URL={{slush-backend.url}}' \
+  --env 'PROMETHEUS_URL={{slush-backend.prometheus.url}}' \
+  -- your-command
 ```
 
-## Switch instances
+For another service, `wp` prefers the instance with the same `--id`; if it is not registered, it uses that service's active instance.
 
-```sh
-wp switch slush tlmysten--some-feature
-```
-
-Use an explicit role when needed:
-
-```sh
-wp switch slush/frontend tlmysten--some-feature
-```
-
-## Inspect state
+## Inspect State
 
 ```sh
 wp service list
 wp list
+wp unregister slush-backend tlmysten--some-feature
 ```
 
 By default, state is stored under the user config directory in `wp/proxy-state.json`. Set `WP_STATE_DIR` or pass `--state-dir` to use another location.
 
-The older `wp proxy ...` commands still exist. They are wrappers around the same state and localias backend.
-
-## Test server
+## Test Server
 
 The repo includes a tiny HTTP server for manual validation:
 

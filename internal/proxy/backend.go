@@ -9,7 +9,7 @@ import (
 )
 
 type Backend interface {
-	Apply(ctx context.Context, service Service, role Role) error
+	Apply(ctx context.Context, service Service, instance Instance) error
 }
 
 type LocaliasBackend struct {
@@ -18,7 +18,7 @@ type LocaliasBackend struct {
 	Reload     bool
 }
 
-func (backend LocaliasBackend) Apply(ctx context.Context, service Service, role Role) error {
+func (backend LocaliasBackend) Apply(ctx context.Context, service Service, instance Instance) error {
 	if service.Alias == "" {
 		return fmt.Errorf("service %q has no alias", service.Name)
 	}
@@ -29,7 +29,7 @@ func (backend LocaliasBackend) Apply(ctx context.Context, service Service, role 
 	}
 
 	setArgs := backend.baseArgs()
-	setArgs = append(setArgs, "set", service.Alias, strconv.Itoa(role.Port))
+	setArgs = append(setArgs, "set", service.Alias, strconv.Itoa(instance.Port))
 	if output, err := exec.CommandContext(ctx, binary, setArgs...).CombinedOutput(); err != nil {
 		return commandError("localias set", err, output)
 	}

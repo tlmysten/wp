@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestProxyRunAppliesLocaliasAndPassesPort(t *testing.T) {
+func TestRunAppliesLocaliasAndPassesPort(t *testing.T) {
 	tempDir := t.TempDir()
 	localiasLogPath := filepath.Join(tempDir, "localias.log")
 	envPath := filepath.Join(tempDir, "env.json")
@@ -20,24 +20,24 @@ func TestProxyRunAppliesLocaliasAndPassesPort(t *testing.T) {
 	mustExecute(t,
 		"--state-dir", stateDir,
 		"--localias-bin", localiasPath,
-		"proxy", "service", "add", "slush",
+		"service", "add", "slush",
 		"--alias", "http://wp-test.localhost",
 	)
 
 	output := mustExecute(t,
 		"--state-dir", stateDir,
 		"--localias-bin", localiasPath,
-		"proxy", "run",
-		"--service", "slush",
+		"run", "slush",
 		"--id", "feature",
 		"--port", "56666",
+		"--switch",
 		"--",
 		os.Args[0],
 		"-test.run", "TestProxyRunHelperProcess",
 		"--",
 		envPath,
 	)
-	if !strings.Contains(output, "registered and switched slush/feature/frontend -> 127.0.0.1:") {
+	if !strings.Contains(output, "registered and switched slush/feature -> localhost:") {
 		t.Fatalf("run output did not include registration line: %q", output)
 	}
 

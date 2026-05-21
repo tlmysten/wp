@@ -5,48 +5,48 @@ import (
 	"testing"
 )
 
-func TestResolveEnvAssignmentsUsesRegisteredRoles(t *testing.T) {
+func TestResolveEnvAssignmentsUsesRegisteredServices(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	if _, err := UpsertService(context.Background(), store, "slush", "dev.slush.app", "frontend"); err != nil {
-		t.Fatalf("upsert service: %v", err)
+	if _, err := UpsertService(context.Background(), store, "slush-backend", "", 3003); err != nil {
+		t.Fatalf("upsert backend service: %v", err)
 	}
-	if err := RegisterRole(context.Background(), store, "slush", "feature", Role{
-		Name: "backend",
-		Host: "127.0.0.1",
+	if err := RegisterInstance(context.Background(), store, "slush-backend", Instance{
+		ID:   "feature",
+		Host: "localhost",
 		Port: 43103,
-		URL:  "http://127.0.0.1:43103",
+		URL:  "http://localhost:43103",
 		ExtraPorts: map[string]ExtraPort{
 			"prometheus": {
 				Name: "prometheus",
-				Host: "127.0.0.1",
+				Host: "localhost",
 				Port: 43104,
-				URL:  "http://127.0.0.1:43104",
+				URL:  "http://localhost:43104",
 			},
 		},
 	}); err != nil {
 		t.Fatalf("register backend: %v", err)
 	}
 
-	resolved, err := resolveEnvAssignments(store, "slush", "feature", Role{
-		Name: "frontend",
-		Host: "127.0.0.1",
+	resolved, err := resolveEnvAssignments(store, "slush-web", "feature", Instance{
+		ID:   "feature",
+		Host: "localhost",
 		Port: 5173,
-		URL:  "http://127.0.0.1:5173",
+		URL:  "http://localhost:5173",
 	}, []string{
-		"EXPO_PUBLIC_APPS_BACKEND_URL={{backend.url}}",
-		"PROMETHEUS_URL={{backend.prometheus.url}}",
-		"FRONTEND_PORT={{frontend.port}}",
+		"EXPO_PUBLIC_APPS_BACKEND_URL={{slush-backend.url}}",
+		"PROMETHEUS_URL={{slush-backend.prometheus.url}}",
+		"FRONTEND_PORT={{slush-web.port}}",
 	})
 	if err != nil {
 		t.Fatalf("resolve env: %v", err)
 	}
 
 	want := []string{
-		"EXPO_PUBLIC_APPS_BACKEND_URL=http://127.0.0.1:43103",
-		"PROMETHEUS_URL=http://127.0.0.1:43104",
+		"EXPO_PUBLIC_APPS_BACKEND_URL=http://localhost:43103",
+		"PROMETHEUS_URL=http://localhost:43104",
 		"FRONTEND_PORT=5173",
 	}
 	if len(resolved) != len(want) {
