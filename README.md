@@ -18,10 +18,10 @@ go install ./cmd/wp
 ## Configure a service
 
 ```sh
-wp service add slush --alias dev.slush.app --switch-role frontend
+wp service add slush --alias dev.slush.app --alias-role frontend
 ```
 
-`--switch-role` is the role localias should point at when you switch instances.
+`--alias-role` is the default role localias should point at when you switch instances.
 
 ## Run a full stack
 
@@ -64,6 +64,12 @@ wp run slush/frontend --id tlmysten--some-feature --switch=false -- pnpm -F wall
 
 ```sh
 wp switch slush tlmysten--some-feature
+```
+
+Use an explicit role when needed:
+
+```sh
+wp switch slush/frontend tlmysten--some-feature
 ```
 
 ## Inspect state

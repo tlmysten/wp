@@ -6,15 +6,15 @@ import (
 	"time"
 )
 
-func UpsertService(ctx context.Context, store *Store, name string, alias string, switchRole string) (Service, error) {
+func UpsertService(ctx context.Context, store *Store, name string, alias string, aliasRole string) (Service, error) {
 	if name == "" {
 		return Service{}, fmt.Errorf("service name is required")
 	}
 	if alias == "" {
 		return Service{}, fmt.Errorf("service alias is required")
 	}
-	if switchRole == "" {
-		switchRole = DefaultSwitchRole
+	if aliasRole == "" {
+		aliasRole = DefaultAliasRole
 	}
 
 	var saved Service
@@ -32,7 +32,7 @@ func UpsertService(ctx context.Context, store *Store, name string, alias string,
 			service.Instances = make(map[string]Instance)
 		}
 		service.Alias = alias
-		service.SwitchRole = switchRole
+		service.AliasRole = aliasRole
 		service.UpdatedAt = now
 		state.Services[name] = service
 		saved = service
@@ -121,6 +121,7 @@ func UnregisterInstance(ctx context.Context, store *Store, serviceName string, i
 		delete(service.Instances, id)
 		if service.ActiveID == id {
 			service.ActiveID = ""
+			service.ActiveRole = ""
 		}
 		service.UpdatedAt = time.Now()
 		state.Services[serviceName] = service
@@ -155,12 +156,14 @@ func UnregisterRole(ctx context.Context, store *Store, serviceName string, id st
 			delete(service.Instances, id)
 			if service.ActiveID == id {
 				service.ActiveID = ""
+				service.ActiveRole = ""
 			}
 		} else {
 			instance.UpdatedAt = time.Now()
 			service.Instances[id] = instance
-			if service.ActiveID == id && service.SwitchRole == roleName {
+			if service.ActiveID == id && service.ActiveRole == roleName {
 				service.ActiveID = ""
+				service.ActiveRole = ""
 			}
 		}
 		service.UpdatedAt = time.Now()
@@ -170,6 +173,10 @@ func UnregisterRole(ctx context.Context, store *Store, serviceName string, id st
 }
 
 func SwitchInstance(ctx context.Context, store *Store, backend Backend, serviceName string, id string) (Service, Instance, Role, error) {
+	return SwitchInstanceRole(ctx, store, backend, serviceName, id, "")
+}
+
+func SwitchInstanceRole(ctx context.Context, store *Store, backend Backend, serviceName string, id string, roleName string) (Service, Instance, Role, error) {
 	if serviceName == "" {
 		return Service{}, Instance{}, Role{}, fmt.Errorf("service name is required")
 	}
@@ -185,13 +192,19 @@ func SwitchInstance(ctx context.Context, store *Store, backend Backend, serviceN
 		if !ok {
 			return fmt.Errorf("unknown service %q", serviceName)
 		}
+		if roleName == "" {
+			roleName = service.AliasRole
+		}
+		if roleName == "" {
+			roleName = DefaultAliasRole
+		}
 		instance, ok := service.Instances[id]
 		if !ok {
 			return fmt.Errorf("unknown instance %q for service %q", id, serviceName)
 		}
-		role, ok := instance.Roles[service.SwitchRole]
+		role, ok := instance.Roles[roleName]
 		if !ok {
-			return fmt.Errorf("unknown switch role %q for service %q instance %q", service.SwitchRole, serviceName, id)
+			return fmt.Errorf("unknown alias role %q for service %q instance %q", roleName, serviceName, id)
 		}
 		if backend == nil {
 			return fmt.Errorf("proxy backend is required")
@@ -200,6 +213,7 @@ func SwitchInstance(ctx context.Context, store *Store, backend Backend, serviceN
 			return err
 		}
 		service.ActiveID = id
+		service.ActiveRole = roleName
 		service.UpdatedAt = time.Now()
 		state.Services[serviceName] = service
 		switchedService = service

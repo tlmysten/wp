@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	stateVersion      = 2
-	DefaultSwitchRole = "frontend"
+	stateVersion     = 2
+	DefaultAliasRole = "frontend"
 )
 
 type State struct {
@@ -19,10 +19,13 @@ type Service struct {
 	Name       string              `json:"name"`
 	Alias      string              `json:"alias"`
 	ActiveID   string              `json:"activeId,omitempty"`
-	SwitchRole string              `json:"switchRole"`
+	ActiveRole string              `json:"activeRole,omitempty"`
+	AliasRole  string              `json:"aliasRole"`
 	Instances  map[string]Instance `json:"instances"`
 	CreatedAt  time.Time           `json:"createdAt"`
 	UpdatedAt  time.Time           `json:"updatedAt"`
+
+	LegacySwitchRole string `json:"switchRole,omitempty"`
 }
 
 type Instance struct {
@@ -81,9 +84,16 @@ func (state *State) Normalize() {
 		if service.Name == "" {
 			service.Name = serviceName
 		}
-		if service.SwitchRole == "" {
-			service.SwitchRole = DefaultSwitchRole
+		if service.AliasRole == "" {
+			service.AliasRole = service.LegacySwitchRole
 		}
+		if service.AliasRole == "" {
+			service.AliasRole = DefaultAliasRole
+		}
+		if service.ActiveID != "" && service.ActiveRole == "" {
+			service.ActiveRole = service.AliasRole
+		}
+		service.LegacySwitchRole = ""
 		if service.Instances == nil {
 			service.Instances = make(map[string]Instance)
 		}
@@ -95,9 +105,9 @@ func (state *State) Normalize() {
 				instance.Roles = make(map[string]Role)
 			}
 			if instance.LegacyPort > 0 && len(instance.Roles) == 0 {
-				roleName := service.SwitchRole
+				roleName := service.AliasRole
 				if roleName == "" {
-					roleName = DefaultSwitchRole
+					roleName = DefaultAliasRole
 				}
 				role := Role{
 					Name:      roleName,

@@ -125,7 +125,7 @@ func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOpti
 	registered = true
 
 	if opts.SwitchOnStart {
-		if _, _, _, err := SwitchInstance(ctx, store, backend, service.Name, id); err != nil {
+		if _, _, _, err := SwitchInstanceRole(ctx, store, backend, service.Name, id, roleName); err != nil {
 			_ = UnregisterRole(context.Background(), store, service.Name, id, roleName)
 			_ = command.Process.Kill()
 			_, _ = waitWithTimeout(command, 2*time.Second)
@@ -171,10 +171,10 @@ func resolveRunRole(store *Store, serviceName string, roleName string) (Service,
 		return Service{}, "", fmt.Errorf("unknown service %q; add it with `wp service add %s --alias <domain>`", serviceName, serviceName)
 	}
 	if roleName == "" {
-		roleName = service.SwitchRole
+		roleName = service.AliasRole
 	}
 	if roleName == "" {
-		roleName = DefaultSwitchRole
+		roleName = DefaultAliasRole
 	}
 	return service, roleName, nil
 }

@@ -55,3 +55,40 @@ func TestRegisterRoleAndSwitchInstance(t *testing.T) {
 		t.Fatalf("backend role = %q, want frontend", backend.role.Name)
 	}
 }
+
+func TestSwitchInstanceRoleUsesExplicitRole(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	if _, err := UpsertService(context.Background(), store, "slush", "dev.slush.app", "frontend"); err != nil {
+		t.Fatalf("upsert service: %v", err)
+	}
+	backendRole := Role{Name: "backend", Host: "127.0.0.1", Port: 5001}
+	if err := RegisterRole(context.Background(), store, "slush", "feature", backendRole); err != nil {
+		t.Fatalf("register backend: %v", err)
+	}
+	frontendRole := Role{Name: "frontend", Host: "127.0.0.1", Port: 5002}
+	if err := RegisterRole(context.Background(), store, "slush", "feature", frontendRole); err != nil {
+		t.Fatalf("register frontend: %v", err)
+	}
+
+	backend := &recordingBackend{}
+	service, _, role, err := SwitchInstanceRole(context.Background(), store, backend, "slush", "feature", "backend")
+	if err != nil {
+		t.Fatalf("switch role: %v", err)
+	}
+	if service.ActiveID != "feature" {
+		t.Fatalf("active id = %q, want feature", service.ActiveID)
+	}
+	if service.ActiveRole != "backend" {
+		t.Fatalf("active role = %q, want backend", service.ActiveRole)
+	}
+	if role.Port != 5001 {
+		t.Fatalf("switched role port = %d, want 5001", role.Port)
+	}
+	if backend.role.Name != "backend" {
+		t.Fatalf("backend role = %q, want backend", backend.role.Name)
+	}
+}

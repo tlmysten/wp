@@ -34,7 +34,7 @@ func newProxyServiceCommand(opts *globalOptions) *cobra.Command {
 	}
 
 	var alias string
-	var switchRole string
+	var aliasRole string
 	addCmd := &cobra.Command{
 		Use:   "add <service>",
 		Short: "Add or update a service alias",
@@ -47,16 +47,18 @@ func newProxyServiceCommand(opts *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			service, err := proxy.UpsertService(cmd.Context(), store, args[0], alias, switchRole)
+			service, err := proxy.UpsertService(cmd.Context(), store, args[0], alias, aliasRole)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s -> %s (switch role: %s)\n", service.Name, service.Alias, service.SwitchRole)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s -> %s (alias role: %s)\n", service.Name, service.Alias, service.AliasRole)
 			return nil
 		},
 	}
 	addCmd.Flags().StringVar(&alias, "alias", "", "localias domain, e.g. dev.slush.app")
-	addCmd.Flags().StringVar(&switchRole, "switch-role", proxy.DefaultSwitchRole, "role used when switching the service alias")
+	addCmd.Flags().StringVar(&aliasRole, "alias-role", proxy.DefaultAliasRole, "role used when switching the service alias")
+	addCmd.Flags().StringVar(&aliasRole, "switch-role", proxy.DefaultAliasRole, "deprecated alias for --alias-role")
+	_ = addCmd.Flags().MarkDeprecated("switch-role", "use --alias-role instead")
 
 	listCmd := &cobra.Command{
 		Use:   "list",
@@ -72,9 +74,9 @@ func newProxyServiceCommand(opts *globalOptions) *cobra.Command {
 				return err
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "SERVICE\tALIAS\tSWITCH ROLE\tACTIVE")
+			fmt.Fprintln(w, "SERVICE\tALIAS\tALIAS ROLE\tACTIVE")
 			for _, service := range state.SortedServices() {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", service.Name, service.Alias, service.SwitchRole, service.ActiveID)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", service.Name, service.Alias, service.AliasRole, activeTarget(service))
 			}
 			return w.Flush()
 		},
@@ -129,7 +131,7 @@ func newProxyRunCommand(opts *globalOptions) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&runOpts.ServiceName, "service", "", "service name")
-	cmd.Flags().StringVar(&runOpts.RoleName, "role", "", "role name; defaults to the service switch role")
+	cmd.Flags().StringVar(&runOpts.RoleName, "role", "", "role name; defaults to the service alias role")
 	cmd.Flags().StringVar(&runOpts.ID, "id", "", "instance id; defaults to the current git branch")
 	cmd.Flags().IntVar(&runOpts.Port, "port", 0, "fixed child port; defaults to an available random port")
 	cmd.Flags().StringVar(&runOpts.PortEnv, "port-env", runOpts.PortEnv, "environment variable used to pass the chosen port")
@@ -184,6 +186,7 @@ func newRunCommand(opts *globalOptions) *cobra.Command {
 func newProxySwitchCommand(opts *globalOptions) *cobra.Command {
 	var serviceName string
 	var id string
+	var roleName string
 
 	cmd := &cobra.Command{
 		Use:   "switch --service <service> --id <id>",
@@ -200,7 +203,7 @@ func newProxySwitchCommand(opts *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			service, instance, role, err := proxy.SwitchInstance(cmd.Context(), store, backendFromOptions(opts), serviceName, id)
+			service, instance, role, err := proxy.SwitchInstanceRole(cmd.Context(), store, backendFromOptions(opts), serviceName, id, roleName)
 			if err != nil {
 				return err
 			}
@@ -211,20 +214,25 @@ func newProxySwitchCommand(opts *globalOptions) *cobra.Command {
 
 	cmd.Flags().StringVar(&serviceName, "service", "", "service name")
 	cmd.Flags().StringVar(&id, "id", "", "instance id")
+	cmd.Flags().StringVar(&roleName, "role", "", "role name; defaults to the service alias role")
 	return cmd
 }
 
 func newSwitchCommand(opts *globalOptions) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "switch <service> <id>",
+		Use:   "switch <service>[/<role>] <id>",
 		Short: "Point a service alias at a registered instance",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			serviceName, roleName, err := parseOptionalServiceRole(args[0])
+			if err != nil {
+				return err
+			}
 			store, err := storeFromOptions(opts)
 			if err != nil {
 				return err
 			}
-			service, instance, role, err := proxy.SwitchInstance(cmd.Context(), store, backendFromOptions(opts), args[0], args[1])
+			service, instance, role, err := proxy.SwitchInstanceRole(cmd.Context(), store, backendFromOptions(opts), serviceName, args[1], roleName)
 			if err != nil {
 				return err
 			}
@@ -367,13 +375,17 @@ func writeInstanceList(out interface {
 		}
 		for _, instance := range service.SortedInstances() {
 			active := ""
-			if service.ActiveID == instance.ID {
+			if service.ActiveID == instance.ID && service.ActiveRole == "" {
 				active = "*"
 			}
 			for _, role := range instance.SortedRoles() {
+				roleActive := active
+				if service.ActiveID == instance.ID && service.ActiveRole == role.Name {
+					roleActive = "*"
+				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n",
 					service.Name,
-					active,
+					roleActive,
 					instance.ID,
 					role.Name,
 					role.Port,
@@ -396,6 +408,30 @@ func parseServiceRole(target string) (string, string, error) {
 		return "", "", fmt.Errorf("target must be <service>/<role>")
 	}
 	return serviceName, roleName, nil
+}
+
+func parseOptionalServiceRole(target string) (string, string, error) {
+	serviceName, roleName, ok := strings.Cut(target, "/")
+	if !ok {
+		if target == "" {
+			return "", "", fmt.Errorf("service is required")
+		}
+		return target, "", nil
+	}
+	if serviceName == "" || roleName == "" || strings.Contains(roleName, "/") {
+		return "", "", fmt.Errorf("target must be <service> or <service>/<role>")
+	}
+	return serviceName, roleName, nil
+}
+
+func activeTarget(service proxy.Service) string {
+	if service.ActiveID == "" {
+		return ""
+	}
+	if service.ActiveRole == "" {
+		return service.ActiveID
+	}
+	return service.ActiveID + "/" + service.ActiveRole
 }
 
 func storeFromOptions(opts *globalOptions) (*proxy.Store, error) {
