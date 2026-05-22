@@ -1,4 +1,4 @@
-# worktree-tools
+# worktree proxy
 
 `wp` registers worktree-local dev servers and points one stable endpoint at the active instance.
 
