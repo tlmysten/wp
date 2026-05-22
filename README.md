@@ -25,6 +25,14 @@ A service has exactly one public endpoint:
 go install ./cmd/wp
 ```
 
+## Agent Skill
+
+This repo includes a small installable agent skill:
+
+```sh
+npx skills add https://github.com/tlmysten/wp --skill worktree-proxy
+```
+
 ## Configure Services
 
 ```sh
