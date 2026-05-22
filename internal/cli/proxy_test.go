@@ -37,7 +37,7 @@ func TestRunAppliesLocaliasAndPassesPort(t *testing.T) {
 		"--",
 		envPath,
 	)
-	if !strings.Contains(output, "registered and switched slush/feature -> localhost:") {
+	if !strings.Contains(output, "READY  slush/feature -> localhost:") {
 		t.Fatalf("run output did not include registration line: %q", output)
 	}
 
@@ -75,6 +75,41 @@ func TestRunAppliesLocaliasAndPassesPort(t *testing.T) {
 	for index := range want {
 		if got[index] != want[index] {
 			t.Fatalf("localias call %d = %q, want %q", index, got[index], want[index])
+		}
+	}
+}
+
+func TestListShowsConfiguredServicesWithoutInstances(t *testing.T) {
+	tempDir := t.TempDir()
+	stateDir := filepath.Join(tempDir, "state")
+
+	mustExecute(t,
+		"--state-dir", stateDir,
+		"service", "add", "slush-backend",
+		"--listen", "3003",
+	)
+	mustExecute(t,
+		"--state-dir", stateDir,
+		"service", "add", "slush-web",
+		"--alias", "dev.slush.app",
+	)
+
+	output := mustExecute(t,
+		"--state-dir", stateDir,
+		"list",
+	)
+	for _, want := range []string{
+		"SERVICE",
+		"ENDPOINT",
+		"ACTIVE",
+		"slush-backend",
+		"127.0.0.1:3003",
+		"slush-web",
+		"dev.slush.app",
+		"none",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("list output %q did not include %q", output, want)
 		}
 	}
 }

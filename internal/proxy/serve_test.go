@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestActiveProxyTargetUsesCurrentActiveInstance(t *testing.T) {
@@ -69,13 +70,43 @@ func TestReverseProxyHandlerLogsMissingActiveInstance(t *testing.T) {
 	}
 	logLine := logs.String()
 	for _, want := range []string{
-		"service=slush-backend",
-		"id=-",
-		"method=GET",
-		"path=/graphql?query=test",
-		"status=502",
-		"target=-",
+		"ERR  502",
+		"GET",
+		"/graphql?query=test",
+		"slush-backend/- -> -",
 		"error=",
+	} {
+		if !strings.Contains(logLine, want) {
+			t.Fatalf("log %q did not include %q", logLine, want)
+		}
+	}
+}
+
+func TestProxyLoggerFormatsRequestLog(t *testing.T) {
+	var logs bytes.Buffer
+	logger := &proxyLogger{out: &logs}
+
+	logger.Log(proxyRequestLog{
+		Time:      time.Date(2026, 5, 21, 16, 29, 13, 0, time.Local),
+		Service:   "slush-backend",
+		Instance:  "feature",
+		Method:    http.MethodPost,
+		Path:      "/graphql",
+		Status:    http.StatusOK,
+		Bytes:     1536,
+		Duration:  3 * time.Millisecond,
+		TargetURL: "http://localhost:60678",
+	})
+
+	logLine := logs.String()
+	for _, want := range []string{
+		"16:29:13",
+		"OK   200",
+		"POST",
+		"/graphql",
+		"3ms",
+		"1.5KB",
+		"slush-backend/feature -> http://localhost:60678",
 	} {
 		if !strings.Contains(logLine, want) {
 			t.Fatalf("log %q did not include %q", logLine, want)

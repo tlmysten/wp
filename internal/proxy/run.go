@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/tlmysten/worktree-tools/internal/ui"
 )
 
 type RunOptions struct {
@@ -143,15 +145,15 @@ func RunCommand(ctx context.Context, store *Store, backend Backend, opts RunOpti
 			_, _ = waitWithTimeout(command, 2*time.Second)
 			return err
 		}
-		fmt.Fprintf(stdout, "registered and switched %s/%s -> %s\n", service.Name, id, instancePortsSummary(instance))
+		fmt.Fprintf(stdout, "%s %s/%s -> %s (switched)\n", ui.Tag(stdout, "READY"), service.Name, id, instancePortsSummary(instance))
 	} else {
-		fmt.Fprintf(stdout, "registered %s/%s -> %s\n", service.Name, id, instancePortsSummary(instance))
+		fmt.Fprintf(stdout, "%s %s/%s -> %s\n", ui.Tag(stdout, "READY"), service.Name, id, instancePortsSummary(instance))
 	}
 
 	err = waitForCommand(ctx, command)
 	if registered {
 		if unregisterErr := UnregisterInstance(context.Background(), store, service.Name, id); unregisterErr != nil {
-			fmt.Fprintf(stderr, "wp: failed to unregister %s/%s: %v\n", service.Name, id, unregisterErr)
+			fmt.Fprintf(stderr, "%s cleanup    failed to unregister %s/%s: %v\n", ui.Tag(stderr, "WARN"), service.Name, id, unregisterErr)
 		}
 	}
 

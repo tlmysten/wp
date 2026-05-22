@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tlmysten/worktree-tools/internal/proxy"
+	"github.com/tlmysten/worktree-tools/internal/ui"
 )
 
 func newServiceCommand(opts *globalOptions) *cobra.Command {
@@ -32,7 +33,7 @@ func newServiceCommand(opts *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s -> %s\n", service.Name, formatEndpoint(service))
+			fmt.Fprintf(cmd.OutOrStdout(), "%s service    %s -> %s\n", ui.Tag(cmd.OutOrStdout(), "OK"), service.Name, formatEndpoint(service))
 			return nil
 		},
 	}
@@ -73,7 +74,7 @@ func newServiceCommand(opts *globalOptions) *cobra.Command {
 			if err := proxy.RemoveService(cmd.Context(), store, args[0]); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "removed service %s\n", args[0])
+			fmt.Fprintf(cmd.OutOrStdout(), "%s removed    service %s\n", ui.Tag(cmd.OutOrStdout(), "OK"), args[0])
 			return nil
 		},
 	}
@@ -142,7 +143,7 @@ func runSwitch(cmd *cobra.Command, opts *globalOptions, serviceName string, id s
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "%s -> %s:%d (%s)\n", formatEndpoint(service), instance.Host, instance.Port, instance.ID)
+	fmt.Fprintf(cmd.OutOrStdout(), "%s switch     %s -> %s:%d (id=%s)\n", ui.Tag(cmd.OutOrStdout(), "OK"), formatEndpoint(service), instance.Host, instance.Port, instance.ID)
 	return nil
 }
 
@@ -219,7 +220,7 @@ func runUnregister(cmd *cobra.Command, opts *globalOptions, serviceName string, 
 	if err := proxy.UnregisterInstance(cmd.Context(), store, serviceName, id); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "unregistered %s/%s\n", serviceName, id)
+	fmt.Fprintf(cmd.OutOrStdout(), "%s removed    %s/%s\n", ui.Tag(cmd.OutOrStdout(), "OK"), serviceName, id)
 	return nil
 }
 
@@ -227,19 +228,24 @@ func writeInstanceList(out interface {
 	Write([]byte) (int, error)
 }, state proxy.State, serviceFilter string) error {
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SERVICE\tACTIVE\tID\tPORT\tEXTRA PORTS\tPID\tCWD\tCOMMAND")
+	fmt.Fprintln(w, "SERVICE\tENDPOINT\tACTIVE\tID\tPORT\tEXTRA PORTS\tPID\tCWD\tCOMMAND")
 	for _, service := range state.SortedServices() {
 		if serviceFilter != "" && service.Name != serviceFilter {
 			continue
 		}
-		for _, instance := range service.SortedInstances() {
-			active := ""
-			if service.ActiveID == instance.ID {
-				active = "*"
-			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\n",
+		instances := service.SortedInstances()
+		if len(instances) == 0 {
+			fmt.Fprintf(w, "%s\t%s\tnone\t-\t-\t-\t-\t-\t-\n",
 				service.Name,
-				active,
+				formatEndpoint(service),
+			)
+			continue
+		}
+		for _, instance := range instances {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\n",
+				service.Name,
+				formatEndpoint(service),
+				formatActive(service, instance),
 				instance.ID,
 				instance.Port,
 				formatExtraPorts(instance.ExtraPorts),
@@ -250,6 +256,13 @@ func writeInstanceList(out interface {
 		}
 	}
 	return w.Flush()
+}
+
+func formatActive(service proxy.Service, instance proxy.Instance) string {
+	if service.ActiveID == instance.ID {
+		return "yes"
+	}
+	return "no"
 }
 
 func formatEndpoint(service proxy.Service) string {

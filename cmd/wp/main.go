@@ -8,6 +8,7 @@ import (
 
 	"github.com/tlmysten/worktree-tools/internal/cli"
 	"github.com/tlmysten/worktree-tools/internal/proxy"
+	"github.com/tlmysten/worktree-tools/internal/ui"
 )
 
 func main() {
@@ -22,6 +23,6 @@ func main() {
 		os.Exit(exitErr.Code)
 	}
 
-	fmt.Fprintln(os.Stderr, err)
+	fmt.Fprintf(os.Stderr, "%s %v\n", ui.Tag(os.Stderr, "ERR"), err)
 	os.Exit(1)
 }

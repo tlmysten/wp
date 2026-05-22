@@ -10,9 +10,10 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/tlmysten/worktree-tools/internal/ui"
 )
 
 type ServeOptions struct {
@@ -61,7 +62,7 @@ func ServeService(ctx context.Context, store *Store, opts ServeOptions) error {
 		_ = server.Close()
 	}()
 
-	fmt.Fprintf(stdout, "serving %s on %s\n", service.Name, addr)
+	fmt.Fprintf(stdout, "%s %s on http://%s\n", ui.Tag(stdout, "SERVE"), service.Name, addr)
 	err = server.Serve(listener)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -203,22 +204,58 @@ func (logger *proxyLogger) Log(entry proxyRequestLog) {
 	if logger.out == nil {
 		return
 	}
-	fields := []string{
-		entry.Time.Format(time.RFC3339),
-		fmt.Sprintf("service=%s", entry.Service),
-		fmt.Sprintf("id=%s", entry.Instance),
-		fmt.Sprintf("method=%s", entry.Method),
-		fmt.Sprintf("path=%s", entry.Path),
-		fmt.Sprintf("status=%d", entry.Status),
-		fmt.Sprintf("bytes=%d", entry.Bytes),
-		fmt.Sprintf("duration=%s", entry.Duration.Round(time.Millisecond)),
-		fmt.Sprintf("target=%s", entry.TargetURL),
-	}
+	line := fmt.Sprintf("%s  %s %3d  %-7s %s  %s  %s  %s/%s -> %s",
+		entry.Time.Format("15:04:05"),
+		ui.Status(logger.out, statusLabel(entry.Status)),
+		entry.Status,
+		entry.Method,
+		entry.Path,
+		formatDuration(entry.Duration),
+		formatBytes(entry.Bytes),
+		entry.Service,
+		entry.Instance,
+		entry.TargetURL,
+	)
 	if entry.Error != "" {
-		fields = append(fields, fmt.Sprintf("error=%q", entry.Error))
+		line += fmt.Sprintf("  error=%q", entry.Error)
 	}
 
 	logger.mu.Lock()
 	defer logger.mu.Unlock()
-	fmt.Fprintln(logger.out, strings.Join(fields, " "))
+	fmt.Fprintln(logger.out, line)
+}
+
+func statusLabel(status int) string {
+	switch {
+	case status >= 500:
+		return "ERR"
+	case status >= 400:
+		return "WARN"
+	case status >= 300:
+		return "REDR"
+	default:
+		return "OK"
+	}
+}
+
+func formatDuration(duration time.Duration) string {
+	switch {
+	case duration < time.Millisecond:
+		return duration.Round(time.Microsecond).String()
+	case duration < time.Second:
+		return duration.Round(time.Millisecond).String()
+	default:
+		return duration.Round(100 * time.Millisecond).String()
+	}
+}
+
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%dB", bytes)
+	}
+	if bytes < unit*unit {
+		return fmt.Sprintf("%.1fKB", float64(bytes)/unit)
+	}
+	return fmt.Sprintf("%.1fMB", float64(bytes)/(unit*unit))
 }
