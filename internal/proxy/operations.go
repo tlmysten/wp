@@ -3,8 +3,14 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 )
+
+type PrunedInstance struct {
+	ServiceName string
+	Instance    Instance
+}
 
 func UpsertService(ctx context.Context, store *Store, name string, alias string, listenPort int) (Service, error) {
 	if name == "" {
@@ -54,6 +60,32 @@ func RemoveService(ctx context.Context, store *Store, name string) error {
 	})
 }
 
+func RenameService(ctx context.Context, store *Store, oldName string, newName string) (Service, error) {
+	if oldName == "" {
+		return Service{}, fmt.Errorf("old service name is required")
+	}
+	if newName == "" {
+		return Service{}, fmt.Errorf("new service name is required")
+	}
+	var renamed Service
+	err := store.Update(ctx, func(state *State) error {
+		service, ok := state.Services[oldName]
+		if !ok {
+			return fmt.Errorf("unknown service %q", oldName)
+		}
+		if _, ok := state.Services[newName]; ok {
+			return fmt.Errorf("service %q already exists", newName)
+		}
+		delete(state.Services, oldName)
+		service.Name = newName
+		service.UpdatedAt = time.Now()
+		state.Services[newName] = service
+		renamed = service
+		return nil
+	})
+	return renamed, err
+}
+
 func RegisterInstance(ctx context.Context, store *Store, serviceName string, instance Instance) error {
 	if serviceName == "" {
 		return fmt.Errorf("service name is required")
@@ -85,6 +117,50 @@ func RegisterInstance(ctx context.Context, store *Store, serviceName string, ins
 		state.Services[serviceName] = service
 		return nil
 	})
+}
+
+func PruneInstances(ctx context.Context, store *Store, serviceFilter string) ([]PrunedInstance, error) {
+	var pruned []PrunedInstance
+	err := store.Update(ctx, func(state *State) error {
+		serviceNames := make([]string, 0, len(state.Services))
+		for serviceName := range state.Services {
+			serviceNames = append(serviceNames, serviceName)
+		}
+		sort.Strings(serviceNames)
+
+		foundService := serviceFilter == ""
+		for _, serviceName := range serviceNames {
+			if serviceFilter != "" && serviceName != serviceFilter {
+				continue
+			}
+			foundService = true
+			service := state.Services[serviceName]
+			changed := false
+			for instanceID, instance := range service.Instances {
+				if IsProcessRunning(instance.PID) {
+					continue
+				}
+				pruned = append(pruned, PrunedInstance{
+					ServiceName: serviceName,
+					Instance:    instance,
+				})
+				delete(service.Instances, instanceID)
+				if service.ActiveID == instanceID {
+					service.ActiveID = ""
+				}
+				changed = true
+			}
+			if changed {
+				service.UpdatedAt = time.Now()
+				state.Services[serviceName] = service
+			}
+		}
+		if !foundService {
+			return fmt.Errorf("unknown service %q", serviceFilter)
+		}
+		return nil
+	})
+	return pruned, err
 }
 
 func UnregisterInstance(ctx context.Context, store *Store, serviceName string, id string) error {

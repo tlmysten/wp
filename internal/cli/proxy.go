@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -81,7 +82,25 @@ func newServiceCommand(opts *globalOptions) *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(addCmd, listCmd, rmCmd)
+	renameCmd := &cobra.Command{
+		Use:   "rename <old-service> <new-service>",
+		Short: "Rename a configured service",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := storeFromOptions(opts)
+			if err != nil {
+				return err
+			}
+			service, err := proxy.RenameService(cmd.Context(), store, args[0], args[1])
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s renamed    %s -> %s\n", ui.Tag(cmd.OutOrStdout(), "OK"), args[0], service.Name)
+			return nil
+		},
+	}
+
+	cmd.AddCommand(addCmd, listCmd, rmCmd, renameCmd)
 	return cmd
 }
 
@@ -124,15 +143,29 @@ func addRunFlags(cmd *cobra.Command, runOpts *proxy.RunOptions) {
 }
 
 func newSwitchCommand(opts *globalOptions) *cobra.Command {
+	var id string
+
 	cmd := &cobra.Command{
 		Use:   "switch <service> <id>",
 		Short: "Point a service endpoint at a registered instance",
-		Args:  cobra.ExactArgs(2),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if id != "" {
+				if len(args) != 0 {
+					return fmt.Errorf("use either `wp switch <service> <id>` or `wp switch --id <id>`")
+				}
+				return nil
+			}
+			return cobra.ExactArgs(2)(cmd, args)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if id != "" {
+				return runSwitchAll(cmd, opts, id)
+			}
 			return runSwitch(cmd, opts, args[0], args[1])
 		},
 	}
 
+	cmd.Flags().StringVar(&id, "id", "", "switch every service with a matching instance id")
 	return cmd
 }
 
@@ -145,7 +178,32 @@ func runSwitch(cmd *cobra.Command, opts *globalOptions, serviceName string, id s
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "%s switch     %s -> %s:%d (id=%s)\n", ui.Tag(cmd.OutOrStdout(), "OK"), formatEndpoint(service), instance.Host, instance.Port, instance.ID)
+	fmt.Fprintf(cmd.OutOrStdout(), "%s switch     %s %s -> %s:%d (id=%s)\n", ui.Tag(cmd.OutOrStdout(), "OK"), service.Name, formatEndpoint(service), instance.Host, instance.Port, instance.ID)
+	return nil
+}
+
+func runSwitchAll(cmd *cobra.Command, opts *globalOptions, id string) error {
+	store, err := storeFromOptions(opts)
+	if err != nil {
+		return err
+	}
+	state, err := store.Load()
+	if err != nil {
+		return err
+	}
+	switched := 0
+	for _, service := range state.SortedServices() {
+		if _, ok := service.Instances[id]; !ok {
+			continue
+		}
+		if err := runSwitch(cmd, opts, service.Name, id); err != nil {
+			return err
+		}
+		switched++
+	}
+	if switched == 0 {
+		return fmt.Errorf("no services have instance %q", id)
+	}
 	return nil
 }
 
@@ -215,29 +273,131 @@ func runServeStatus(cmd *cobra.Command, opts *globalOptions, serviceName string,
 		}
 		services = []proxy.Service{service}
 	}
-	return writeServeStatus(cmd.OutOrStdout(), cmd.Context(), services, host)
+	rows := collectServeStatus(cmd.Context(), services, host)
+	if err := writeServeStatus(cmd.OutOrStdout(), rows); err != nil {
+		return err
+	}
+	if serviceName != "" && (len(rows) == 0 || !rows[0].Running) {
+		return proxy.CommandExitError{Code: 1}
+	}
+	return nil
 }
 
-func writeServeStatus(out io.Writer, ctx context.Context, services []proxy.Service, host string) error {
-	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SERVICE\tENDPOINT\tSTATUS\tDETAIL")
+type serveStatusRow struct {
+	Service  proxy.Service
+	Endpoint string
+	Status   string
+	Detail   string
+	Running  bool
+}
+
+func collectServeStatus(ctx context.Context, services []proxy.Service, host string) []serveStatusRow {
+	rows := make([]serveStatusRow, 0, len(services))
 	for _, service := range services {
+		row := serveStatusRow{
+			Service:  service,
+			Endpoint: formatEndpoint(service),
+		}
 		if service.ListenPort <= 0 {
-			fmt.Fprintf(w, "%s\t%s\tskip\talias service\n", service.Name, formatEndpoint(service))
+			row.Status = "skip"
+			row.Detail = "alias service"
+			rows = append(rows, row)
 			continue
 		}
 		status := proxy.CheckServeStatus(ctx, service, host)
+		row.Running = status.Running
 		if status.Running {
-			fmt.Fprintf(w, "%s\t%s\trunning\tlistening on %s:%d\n", service.Name, formatEndpoint(service), status.Host, service.ListenPort)
-			continue
+			row.Status = "running"
+			row.Detail = fmt.Sprintf("listening on %s:%d", status.Host, service.ListenPort)
+		} else {
+			row.Status = "stopped"
+			row.Detail = status.Error.Error()
 		}
-		fmt.Fprintf(w, "%s\t%s\tstopped\t%s\n", service.Name, formatEndpoint(service), status.Error)
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func writeServeStatus(out io.Writer, rows []serveStatusRow) error {
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SERVICE\tENDPOINT\tSTATUS\tDETAIL")
+	for _, row := range rows {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", row.Service.Name, row.Endpoint, row.Status, row.Detail)
 	}
 	return w.Flush()
 }
 
+func newCurrentCommand(opts *globalOptions) *cobra.Command {
+	var field string
+	var extraPortName string
+
+	cmd := &cobra.Command{
+		Use:   "current <service>",
+		Short: "Print the active target for a service",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := storeFromOptions(opts)
+			if err != nil {
+				return err
+			}
+			state, err := store.Load()
+			if err != nil {
+				return err
+			}
+			_, instance, err := proxy.ActiveInstance(state, args[0])
+			if err != nil {
+				return err
+			}
+			value, err := currentValue(instance, field, extraPortName)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), value)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&field, "field", "url", "field to print: url, host, port, or id")
+	cmd.Flags().StringVar(&extraPortName, "extra", "", "print a named extra port instead of the primary port")
+	return cmd
+}
+
+func currentValue(instance proxy.Instance, field string, extraPortName string) (string, error) {
+	if extraPortName != "" {
+		extraPort, ok := instance.ExtraPorts[extraPortName]
+		if !ok {
+			return "", fmt.Errorf("unknown extra port %q for instance %q", extraPortName, instance.ID)
+		}
+		switch field {
+		case "url":
+			return extraPort.URL, nil
+		case "host":
+			return extraPort.Host, nil
+		case "port":
+			return fmt.Sprintf("%d", extraPort.Port), nil
+		case "id":
+			return instance.ID, nil
+		default:
+			return "", fmt.Errorf("unknown field %q", field)
+		}
+	}
+	switch field {
+	case "url":
+		return instance.URL, nil
+	case "host":
+		return instance.Host, nil
+	case "port":
+		return fmt.Sprintf("%d", instance.Port), nil
+	case "id":
+		return instance.ID, nil
+	default:
+		return "", fmt.Errorf("unknown field %q", field)
+	}
+}
+
 func newListCommand(opts *globalOptions) *cobra.Command {
 	var serviceFilter string
+	var host string
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -252,11 +412,12 @@ func newListCommand(opts *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return writeInstanceList(cmd.OutOrStdout(), state, serviceFilter)
+			return writeInstanceList(cmd.OutOrStdout(), cmd.Context(), state, serviceFilter, host)
 		},
 	}
 
 	cmd.Flags().StringVar(&serviceFilter, "service", "", "filter by service")
+	cmd.Flags().StringVar(&host, "host", "127.0.0.1", "host to probe for wp serve status")
 	return cmd
 }
 
@@ -273,6 +434,115 @@ func newUnregisterCommand(opts *globalOptions) *cobra.Command {
 	return cmd
 }
 
+func newPruneCommand(opts *globalOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "prune [service]",
+		Short: "Remove registered instances whose process is gone",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			serviceName := ""
+			if len(args) > 0 {
+				serviceName = args[0]
+			}
+			store, err := storeFromOptions(opts)
+			if err != nil {
+				return err
+			}
+			pruned, err := proxy.PruneInstances(cmd.Context(), store, serviceName)
+			if err != nil {
+				return err
+			}
+			if len(pruned) == 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s prune     no stale instances\n", ui.Tag(cmd.OutOrStdout(), "OK"))
+				return nil
+			}
+			for _, item := range pruned {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s prune     %s/%s (pid=%d)\n", ui.Tag(cmd.OutOrStdout(), "OK"), item.ServiceName, item.Instance.ID, item.Instance.PID)
+			}
+			return nil
+		},
+	}
+	return cmd
+}
+
+func newDoctorCommand(opts *globalOptions) *cobra.Command {
+	var host string
+
+	cmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Check wp configuration and active targets",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := storeFromOptions(opts)
+			if err != nil {
+				return err
+			}
+			state, err := store.Load()
+			if err != nil {
+				return err
+			}
+			return writeDoctor(cmd.OutOrStdout(), cmd.Context(), opts, state, host)
+		},
+	}
+
+	cmd.Flags().StringVar(&host, "host", "127.0.0.1", "host to probe for wp serve status")
+	return cmd
+}
+
+func writeDoctor(out io.Writer, ctx context.Context, opts *globalOptions, state proxy.State, host string) error {
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "CHECK\tSTATUS\tDETAIL")
+	services := state.SortedServices()
+	fmt.Fprintf(w, "state\tok\t%d configured services\n", len(services))
+
+	needsLocalias := false
+	for _, service := range services {
+		if service.Alias != "" {
+			needsLocalias = true
+			break
+		}
+	}
+	if needsLocalias {
+		if path, err := exec.LookPath(opts.localiasBin); err == nil {
+			fmt.Fprintf(w, "localias\tok\t%s\n", path)
+		} else {
+			fmt.Fprintf(w, "localias\twarn\t%s\n", err)
+		}
+	} else {
+		fmt.Fprintln(w, "localias\tskip\tno alias services")
+	}
+
+	serveRows := collectServeStatus(ctx, services, host)
+	for _, row := range serveRows {
+		if row.Status == "skip" {
+			continue
+		}
+		status := "ok"
+		if !row.Running {
+			status = "warn"
+		}
+		fmt.Fprintf(w, "serve:%s\t%s\t%s\n", row.Service.Name, status, row.Detail)
+	}
+
+	for _, service := range services {
+		if service.ActiveID == "" {
+			fmt.Fprintf(w, "active:%s\twarn\tno active instance\n", service.Name)
+			continue
+		}
+		instance, ok := service.Instances[service.ActiveID]
+		if !ok {
+			fmt.Fprintf(w, "active:%s\twarn\tactive instance %q is missing\n", service.Name, service.ActiveID)
+			continue
+		}
+		if err := proxy.CheckTCP(ctx, instance.Host, instance.Port); err != nil {
+			fmt.Fprintf(w, "target:%s\twarn\t%s\n", service.Name, err)
+			continue
+		}
+		fmt.Fprintf(w, "target:%s\tok\t%s\n", service.Name, instance.URL)
+	}
+	return w.Flush()
+}
+
 func runUnregister(cmd *cobra.Command, opts *globalOptions, serviceName string, id string) error {
 	store, err := storeFromOptions(opts)
 	if err != nil {
@@ -287,25 +557,37 @@ func runUnregister(cmd *cobra.Command, opts *globalOptions, serviceName string, 
 
 func writeInstanceList(out interface {
 	Write([]byte) (int, error)
-}, state proxy.State, serviceFilter string) error {
+}, ctx context.Context, state proxy.State, serviceFilter string, host string) error {
+	serveStatusByService := make(map[string]string)
+	serveRows := collectServeStatus(ctx, state.SortedServices(), host)
+	for _, row := range serveRows {
+		if row.Status == "skip" {
+			serveStatusByService[row.Service.Name] = "-"
+		} else {
+			serveStatusByService[row.Service.Name] = row.Status
+		}
+	}
+
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SERVICE\tENDPOINT\tACTIVE\tID\tPORT\tEXTRA PORTS\tPID\tCWD\tCOMMAND")
+	fmt.Fprintln(w, "SERVICE\tENDPOINT\tSERVE\tACTIVE\tID\tPORT\tEXTRA PORTS\tPID\tCWD\tCOMMAND")
 	for _, service := range state.SortedServices() {
 		if serviceFilter != "" && service.Name != serviceFilter {
 			continue
 		}
 		instances := service.SortedInstances()
 		if len(instances) == 0 {
-			fmt.Fprintf(w, "%s\t%s\tnone\t-\t-\t-\t-\t-\t-\n",
+			fmt.Fprintf(w, "%s\t%s\t%s\tnone\t-\t-\t-\t-\t-\t-\n",
 				service.Name,
 				formatEndpoint(service),
+				serveStatusByService[service.Name],
 			)
 			continue
 		}
 		for _, instance := range instances {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\n",
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\n",
 				service.Name,
 				formatEndpoint(service),
+				serveStatusByService[service.Name],
 				formatActive(service, instance),
 				instance.ID,
 				instance.Port,

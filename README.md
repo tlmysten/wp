@@ -2,6 +2,12 @@
 
 `wp` registers worktree-local dev servers and points one stable endpoint at the active instance.
 
+## What This Is
+
+`wp` is a small local development router for multi-worktree projects. Each named service has one stable public endpoint, while each worktree can run its own private random-port process. `wp run` starts a process, records the chosen port under an instance id, and optionally switches the service to that instance. `wp serve` handles stable localhost port forwarding; localias-backed services are switched through the localias CLI.
+
+This is intentionally not a process supervisor. It stores lightweight local state, starts commands when asked, removes registrations when those commands exit, and uses live checks for things like whether `wp serve` is listening.
+
 The model is deliberately small:
 
 ```text
@@ -88,8 +94,22 @@ For another service, `wp` prefers the instance with the same `--id`; if it is no
 ```sh
 wp service list
 wp list
+wp serve status
+wp current slush-backend
+wp prune
+wp doctor
 wp unregister slush-backend tlmysten--some-feature
 ```
+
+Useful workflow helpers:
+
+- `wp list` shows configured services, whether the built-in `wp serve` port is listening, the active instance, and any registered instances.
+- `wp serve status [service]` live-checks whether the fixed local port is listening.
+- `wp current <service>` prints the active target URL for scripts.
+- `wp switch --id <instance-id>` switches every service that has that instance id.
+- `wp prune [service]` removes stale registrations whose process is gone.
+- `wp doctor` checks state, localias availability, `wp serve` ports, and active targets.
+- `wp service rename <old> <new>` renames a configured service.
 
 By default, state is stored under the user config directory in `wp/proxy-state.json`. Set `WP_STATE_DIR` or pass `--state-dir` to use another location.
 

@@ -90,15 +90,22 @@ func CheckServeStatus(ctx context.Context, service Service, host string) ServeSt
 		return status
 	}
 
-	dialer := net.Dialer{Timeout: 250 * time.Millisecond}
-	conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", host, service.ListenPort))
-	if err != nil {
+	if err := CheckTCP(ctx, host, service.ListenPort); err != nil {
 		status.Error = err
 		return status
 	}
-	_ = conn.Close()
 	status.Running = true
 	return status
+}
+
+func CheckTCP(ctx context.Context, host string, port int) error {
+	dialer := net.Dialer{Timeout: 250 * time.Millisecond}
+	conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", host, port))
+	if err != nil {
+		return err
+	}
+	_ = conn.Close()
+	return nil
 }
 
 func NewReverseProxyHandler(store *Store, serviceName string, logOutput io.Writer) http.Handler {

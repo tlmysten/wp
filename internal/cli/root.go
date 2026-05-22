@@ -35,7 +35,10 @@ func NewRootCommand() *cobra.Command {
 		newRunCommand(opts),
 		newSwitchCommand(opts),
 		newServeCommand(opts),
+		newCurrentCommand(opts),
 		newListCommand(opts),
+		newPruneCommand(opts),
+		newDoctorCommand(opts),
 		newUnregisterCommand(opts),
 	)
 	return cmd
