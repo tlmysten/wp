@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -160,6 +162,27 @@ func newServeCommand(opts *globalOptions) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&host, "host", "127.0.0.1", "host for the built-in reverse proxy")
+	cmd.AddCommand(newServeStatusCommand(opts))
+	return cmd
+}
+
+func newServeStatusCommand(opts *globalOptions) *cobra.Command {
+	var host string
+
+	cmd := &cobra.Command{
+		Use:   "status [service]",
+		Short: "Check whether wp serve is listening",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			serviceName := ""
+			if len(args) > 0 {
+				serviceName = args[0]
+			}
+			return runServeStatus(cmd, opts, serviceName, host)
+		},
+	}
+
+	cmd.Flags().StringVar(&host, "host", "127.0.0.1", "host to probe")
 	return cmd
 }
 
@@ -173,6 +196,44 @@ func runServe(cmd *cobra.Command, opts *globalOptions, serviceName string, host 
 		Host:        host,
 		Stdout:      cmd.OutOrStdout(),
 	})
+}
+
+func runServeStatus(cmd *cobra.Command, opts *globalOptions, serviceName string, host string) error {
+	store, err := storeFromOptions(opts)
+	if err != nil {
+		return err
+	}
+	state, err := store.Load()
+	if err != nil {
+		return err
+	}
+	services := state.SortedServices()
+	if serviceName != "" {
+		service, ok := state.Services[serviceName]
+		if !ok {
+			return fmt.Errorf("unknown service %q", serviceName)
+		}
+		services = []proxy.Service{service}
+	}
+	return writeServeStatus(cmd.OutOrStdout(), cmd.Context(), services, host)
+}
+
+func writeServeStatus(out io.Writer, ctx context.Context, services []proxy.Service, host string) error {
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SERVICE\tENDPOINT\tSTATUS\tDETAIL")
+	for _, service := range services {
+		if service.ListenPort <= 0 {
+			fmt.Fprintf(w, "%s\t%s\tskip\talias service\n", service.Name, formatEndpoint(service))
+			continue
+		}
+		status := proxy.CheckServeStatus(ctx, service, host)
+		if status.Running {
+			fmt.Fprintf(w, "%s\t%s\trunning\tlistening on %s:%d\n", service.Name, formatEndpoint(service), status.Host, service.ListenPort)
+			continue
+		}
+		fmt.Fprintf(w, "%s\t%s\tstopped\t%s\n", service.Name, formatEndpoint(service), status.Error)
+	}
+	return w.Flush()
 }
 
 func newListCommand(opts *globalOptions) *cobra.Command {

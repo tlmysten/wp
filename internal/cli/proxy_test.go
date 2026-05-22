@@ -114,6 +114,42 @@ func TestListShowsConfiguredServicesWithoutInstances(t *testing.T) {
 	}
 }
 
+func TestServeStatusChecksConfiguredServices(t *testing.T) {
+	tempDir := t.TempDir()
+	stateDir := filepath.Join(tempDir, "state")
+
+	mustExecute(t,
+		"--state-dir", stateDir,
+		"service", "add", "slush-backend",
+		"--listen", "3003",
+	)
+	mustExecute(t,
+		"--state-dir", stateDir,
+		"service", "add", "slush-web",
+		"--alias", "dev.slush.app",
+	)
+
+	output := mustExecute(t,
+		"--state-dir", stateDir,
+		"serve", "status",
+	)
+	for _, want := range []string{
+		"SERVICE",
+		"ENDPOINT",
+		"STATUS",
+		"slush-backend",
+		"127.0.0.1:3003",
+		"stopped",
+		"slush-web",
+		"dev.slush.app",
+		"skip",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("serve status output %q did not include %q", output, want)
+		}
+	}
+}
+
 func TestProxyRunHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_WP_HELPER_PROCESS") != "1" {
 		return

@@ -22,6 +22,13 @@ type ServeOptions struct {
 	Stdout      io.Writer
 }
 
+type ServeStatus struct {
+	Service Service
+	Host    string
+	Running bool
+	Error   error
+}
+
 func ServeService(ctx context.Context, store *Store, opts ServeOptions) error {
 	if opts.ServiceName == "" {
 		return fmt.Errorf("service name is required")
@@ -68,6 +75,30 @@ func ServeService(ctx context.Context, store *Store, opts ServeOptions) error {
 		return nil
 	}
 	return err
+}
+
+func CheckServeStatus(ctx context.Context, service Service, host string) ServeStatus {
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	status := ServeStatus{
+		Service: service,
+		Host:    host,
+	}
+	if service.ListenPort <= 0 {
+		status.Error = fmt.Errorf("service %q does not have a listen port", service.Name)
+		return status
+	}
+
+	dialer := net.Dialer{Timeout: 250 * time.Millisecond}
+	conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", host, service.ListenPort))
+	if err != nil {
+		status.Error = err
+		return status
+	}
+	_ = conn.Close()
+	status.Running = true
+	return status
 }
 
 func NewReverseProxyHandler(store *Store, serviceName string, logOutput io.Writer) http.Handler {
